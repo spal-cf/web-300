@@ -326,7 +326,7 @@ amdb=# SELECT * from AWAE;
 (1 row)
 ```
 
-CHR does not work for COPY function
+###### CHR does not work for COPY function
 
 ```
 CREATE TABLE AWAE (offsec text);
