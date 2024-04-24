@@ -324,6 +324,7 @@ amdb=# SELECT * from AWAE;
 --------
  AWAE
 (1 row)
+
 ```
 
 ###### CHR does not work for COPY function
