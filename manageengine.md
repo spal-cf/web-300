@@ -315,7 +315,7 @@ AWAE
 
 The problem is that character concatenation only works for basic queries such as SELECT, INSERT, DELETE, etc. It does not work for all SQL statements.
 
-````
+```
 amdb=# CREATE TABLE AWAE (offsec text); INSERT INTO AWAE(offsec) VALUES (CHR(65)||CHR(87)||CHR(65)||CHR(69));
 CREATE TABLE
 INSERT 0 1
