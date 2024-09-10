@@ -238,3 +238,8 @@ java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=9898 -jar Num
 ```
 
 
+rdesktop cmd:
+```
+rdesktop dnn -u Administrator -p studentlab -r disk:mnt=/home/kali/web-300
+```
+
